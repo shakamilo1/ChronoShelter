@@ -1,7 +1,7 @@
 # ChronoShelter
 
 <img src="https://github.com/user-attachments/assets/1c2735f9-35c0-4355-ace2-9e82e3df8d58" width="300">
-
+<img src="https://github.com/shakamilo1/ChronoShelter/blob/main/logo.png" width="300">
 Chrono：来自 希腊语，源词 χρόνος (khrónos)，意为“时间”。
 
 Shelter：庇护所，象征你为动画记忆打造的安全港湾。
