@@ -22,6 +22,8 @@ class Anime:
     rank: int | None
     image_small: str | None
     image_large: str | None
+    cover_local_path: str | None
+    broadcast: str | None
     tags_json: Any
     meta_tags_json: Any
     infobox_json: Any

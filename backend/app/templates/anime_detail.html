@@ -1,14 +1,16 @@
 {% extends "base.html" %}
 {% block title %}{{ anime.name_cn or anime.name_jp }} - ChronoShelter{% endblock %}
 {% block content %}
+{% set cover = '/' ~ anime.cover_local_path if anime.cover_local_path else (anime.image_large or anime.image_small) %}
 <section class="detail">
-  {% if anime.image_large or anime.image_small %}<img class="cover" src="{{ anime.image_large or anime.image_small }}" alt="cover">{% endif %}
+  {% if cover %}<img class="cover" src="{{ cover }}" alt="cover">{% endif %}
   <div>
     <h1>{{ anime.name_cn or anime.name_jp }}</h1>
     {% if anime.name_jp %}<p class="muted">{{ anime.name_jp }}</p>{% endif %}
     {% if anime.name_en and anime.name_en|lower != 'tv' %}<p class="muted">{{ anime.name_en }}</p>{% endif %}
     <p>集数：{{ anime.eps if anime.eps else '未定' }}</p>
     <p>首播：{% if anime.air_date %}{{ anime.air_date }}{% elif anime.raw_air_date %}{{ anime.raw_air_date }}{% elif anime.air_year %}{{ anime.air_year }}{% if anime.air_month %}/{{ anime.air_month }}{% endif %}{% else %}未定{% endif %}</p>
+    {% if anime.broadcast %}<p>放送：{{ anime.broadcast }}</p>{% endif %}
     <p>{% if anime.rating_score and anime.rating_count %}评分：{{ anime.rating_score }} / {{ anime.rating_count }} 人{% else %}暂无评分{% endif %}</p>
     {% if anime.summary %}<p class="summary">{{ anime.summary }}</p>{% endif %}
   </div>

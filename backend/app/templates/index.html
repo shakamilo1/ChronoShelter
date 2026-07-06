@@ -7,9 +7,10 @@
 </form>
 <div class="grid">
 {% for item in anime %}
+  {% set cover = '/' ~ item.cover_local_path if item.cover_local_path else item.image_small %}
   <article class="card">
     <a href="/anime/{{ item.id }}">
-      {% if item.image_small %}<img src="{{ item.image_small }}" alt="{{ item.name_cn or item.name_jp }}">{% endif %}
+      {% if cover %}<img src="{{ cover }}" alt="{{ item.name_cn or item.name_jp }}">{% endif %}
       <h2>{{ item.name_cn or item.name_jp }}</h2>
     </a>
     <p class="muted">{{ item.name_jp }}</p>

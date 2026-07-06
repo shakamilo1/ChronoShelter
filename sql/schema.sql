@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS bangumi_anime (
   `rank` INT NULL,
   image_small TEXT NULL,
   image_large TEXT NULL,
+  cover_local_path TEXT NULL,
+  broadcast TEXT NULL,
   tags_json JSON,
   meta_tags_json JSON,
   infobox_json JSON,
