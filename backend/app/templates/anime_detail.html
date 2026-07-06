@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}{{ anime.name_cn or anime.name_jp }} - ChronoShelter{% endblock %}
+{% block content %}
+<section class="detail">
+  {% if anime.image_large or anime.image_small %}<img class="cover" src="{{ anime.image_large or anime.image_small }}" alt="cover">{% endif %}
+  <div>
+    <h1>{{ anime.name_cn or anime.name_jp }}</h1>
+    {% if anime.name_jp %}<p class="muted">{{ anime.name_jp }}</p>{% endif %}
+    {% if anime.name_en and anime.name_en|lower != 'tv' %}<p class="muted">{{ anime.name_en }}</p>{% endif %}
+    <p>集数：{{ anime.eps if anime.eps else '未定' }}</p>
+    <p>首播：{% if anime.air_date %}{{ anime.air_date }}{% elif anime.raw_air_date %}{{ anime.raw_air_date }}{% elif anime.air_year %}{{ anime.air_year }}{% if anime.air_month %}/{{ anime.air_month }}{% endif %}{% else %}未定{% endif %}</p>
+    <p>{% if anime.rating_score and anime.rating_count %}评分：{{ anime.rating_score }} / {{ anime.rating_count }} 人{% else %}暂无评分{% endif %}</p>
+    {% if anime.summary %}<p class="summary">{{ anime.summary }}</p>{% endif %}
+  </div>
+</section>
+<section><h2>Infobox</h2><dl>
+{% for info in anime.infobox %}{% if info.value %}<dt>{{ info.key }}</dt><dd>{% if info.value is string %}{{ info.value }}{% else %}{% for alias in info.value %}<div>{{ alias.v }}</div>{% endfor %}{% endif %}</dd>{% endif %}{% endfor %}
+</dl></section>
+<section><h2>标签</h2><div class="tags">{% for tag in anime.tags %}<span>{{ tag.name }}{% if tag.count %} {{ tag.count }}{% endif %}</span>{% endfor %}</div></section>
+<section><h2>Meta Tags</h2><div class="tags">{% for tag in anime.meta_tags %}<span>{{ tag }}</span>{% endfor %}</div></section>
+{% endblock %}

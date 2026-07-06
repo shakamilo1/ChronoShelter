@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}动画列表 - ChronoShelter{% endblock %}
+{% block content %}
+<form class="search" action="/" method="get">
+  <input name="q" value="{{ q }}" placeholder="搜索中文名 / 日文名 / 英文名">
+  <button type="submit">搜索</button>
+</form>
+<div class="grid">
+{% for item in anime %}
+  <article class="card">
+    <a href="/anime/{{ item.id }}">
+      {% if item.image_small %}<img src="{{ item.image_small }}" alt="{{ item.name_cn or item.name_jp }}">{% endif %}
+      <h2>{{ item.name_cn or item.name_jp }}</h2>
+    </a>
+    <p class="muted">{{ item.name_jp }}</p>
+    <p>{{ item.air_year or '未知年份' }}{% if item.air_month %}/{{ '%02d'|format(item.air_month) }}{% endif %}</p>
+    <p>{% if item.rating_score and item.rating_count %}⭐ {{ item.rating_score }} ({{ item.rating_count }}){% else %}暂无评分{% endif %}</p>
+    <div class="tags">{% for tag in item.tags[:6] %}<span>{{ tag.name }}</span>{% endfor %}</div>
+  </article>
+{% else %}<p>暂无数据，请先导入 Bangumi subject.jsonlines。</p>{% endfor %}
+</div>
+{% endblock %}
