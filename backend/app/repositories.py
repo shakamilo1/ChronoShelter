@@ -193,7 +193,7 @@ def save_collection(subject_id: int, form: dict):
         cur.execute(f"INSERT INTO collections ({quoted}) VALUES ({placeholders})", values)
 
 
-def iter_covers(missing_only=False, anime_id=None, limit=None):
+def iter_covers(missing_only=False, anime_id=None, limit=None, retry_failed=False):
     cols = get_table_columns("subjects", public_database_name())
     sql = "SELECT id FROM subjects"
     params = []
@@ -214,6 +214,47 @@ def iter_covers(missing_only=False, anime_id=None, limit=None):
         return cur.fetchall()
 
 
-def update_cover_status(anime_id: int, local_path: str | None, status: str):
-    # Archive public tables are replaceable snapshots. Cover cache status is intentionally not written there.
+def failed_cover_ids(limit=None):
+    if not table_exists("cover_cache", library_database_name()):
+        return []
+    cols = get_table_columns("cover_cache", library_database_name())
+    if not {"subject_id", "status"}.issubset(cols):
+        return []
+    sql = "SELECT subject_id AS id FROM cover_cache WHERE status='failed' ORDER BY subject_id"
+    params = []
+    if limit:
+        sql += " LIMIT %s"
+        params.append(limit)
+    with get_connection(library_database_name()) as conn, conn.cursor() as cur:
+        cur.execute(sql, params)
+        return cur.fetchall()
+
+
+def update_cover_status(anime_id: int, local_path: str | None, status: str, metadata: dict | None = None):
+    if not table_exists("cover_cache", library_database_name()):
+        return None
+    metadata = metadata or {}
+    cols = get_table_columns("cover_cache", library_database_name())
+    row = {
+        "subject_id": anime_id,
+        "status": status,
+        "local_path": local_path,
+        "error": metadata.get("error"),
+        "http_status": metadata.get("http_status"),
+        "content_type": metadata.get("content_type"),
+        "file_size": metadata.get("file_size"),
+        "width": metadata.get("width"),
+        "height": metadata.get("height"),
+    }
+    writable = [key for key, value in row.items() if key in cols]
+    if "subject_id" not in writable:
+        return None
+    quoted = ", ".join(f"`{col}`" for col in writable)
+    values = ", ".join(f"%({col})s" for col in writable)
+    updates = ", ".join(f"`{col}`=VALUES(`{col}`)" for col in writable if col != "subject_id")
+    if "updated_at" in cols:
+        updates = f"{updates}, updated_at=CURRENT_TIMESTAMP" if updates else "updated_at=CURRENT_TIMESTAMP"
+    sql = f"INSERT INTO cover_cache ({quoted}) VALUES ({values}) ON DUPLICATE KEY UPDATE {updates}" if updates else f"INSERT IGNORE INTO cover_cache ({quoted}) VALUES ({values})"
+    with get_connection(library_database_name()) as conn, conn.cursor() as cur:
+        cur.execute(sql, {key: row[key] for key in writable})
     return None

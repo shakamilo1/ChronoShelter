@@ -137,6 +137,20 @@ python importer/import_archive_dump.py --dir data/archive/current --dry-run
 python importer/import_archive_dump.py --dir data/archive/current
 ```
 
+## 图片缓存
+
+不依赖 Archive 图片字段。封面通过 Bangumi API 获取：`GET https://api.bgm.tv/v0/subjects/{subject_id}/image?type=large`，保存到 `media/covers/{subject_id}.jpg`。下载时会检查 HTTP 状态、`Content-Type`、文件大小和图片尺寸，并拒绝 `https://lain.bgm.tv/img/no_icon_subject.png`。
+
+```bash
+python tools/cache_covers.py --missing
+python tools/cache_covers.py --id 285757
+python tools/cache_covers.py --missing --limit 100
+python tools/cache_covers.py --all
+python tools/cache_covers.py --retry-failed
+```
+
+如果 `chrono_library.cover_cache` 表存在，工具会记录 `status`、`local_path`、`error`、`http_status`、`content_type`、`file_size`、`width`、`height`。失败日志仍写入 `logs/cover_failures.log`。
+
 ## 网站查询逻辑
 
 - 海报墙：`subjects(type=2)`。
@@ -181,6 +195,20 @@ docker compose up -d --build
 -- ALTER TABLE chrono_library.collections ADD COLUMN notes TEXT NULL;
 -- ALTER TABLE chrono_library.collections ADD COLUMN progress VARCHAR(128) NULL;
 -- ALTER TABLE chrono_library.collections ADD COLUMN extra_json JSON NULL;
+
+-- Optional cover cache status table (manual draft):
+-- CREATE TABLE chrono_library.cover_cache (
+--   subject_id BIGINT PRIMARY KEY,
+--   status VARCHAR(32) NULL,
+--   local_path TEXT NULL,
+--   error TEXT NULL,
+--   http_status INT NULL,
+--   content_type VARCHAR(255) NULL,
+--   file_size BIGINT NULL,
+--   width INT NULL,
+--   height INT NULL,
+--   updated_at DATETIME NULL
+-- );
 ```
 
 公共库 `chrono_bangumi` 应由 Bangumi Archive 导入到临时库并验证后替换，不能在 Web 运行时直接覆盖生产库。
