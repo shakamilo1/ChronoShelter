@@ -57,7 +57,7 @@ chrono_bangumi.subjects
   └─ 只 INSERT/UPDATE chrono_library.collections
 
 Archive 更新
-  └─ 下载 release zip -> 解压 -> 导入临时公共库 -> 验证 -> 人工计划替换 chrono_bangumi 公共表
+  └─ 下载 release zip -> 解压 -> import_archive_dump.py 导入临时公共库 -> 验证 -> 人工计划替换 chrono_bangumi 公共表
      不直接覆盖生产库，不触碰 chrono_library.collections
 ```
 
@@ -92,6 +92,18 @@ mysqldump --single-transaction -u root -p chrono_library collections > backups/c
 ```
 
 然后再根据下面的 migration SQL 草稿人工评估，不要在未确认字段结构前执行。
+
+## Archive dump 导入器
+
+从 Archive dump 目录读取 jsonlines 文件并写入 `chrono_bangumi` 已存在表（不创建数据库/表）：
+
+```bash
+python importer/import_archive_dump.py --dir /path/to/archive-dump --dry-run
+python importer/import_archive_dump.py --dir /path/to/archive-dump --table subjects --limit 100
+python importer/import_archive_dump.py --dir /path/to/archive-dump
+```
+
+支持的文件名包括 `subject.jsonlines`、`episode.jsonlines`、`person.jsonlines`、`character.jsonlines`、`subject_person.jsonlines`、`subject_character.jsonlines`、`subject_relation.jsonlines`、`person_relation.jsonlines`、`person_character.jsonlines`。
 
 ## Archive 更新工具
 

@@ -15,7 +15,6 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app import repositories
 from importer.image_cache import cache_cover
-from app.archive_mapper import loads
 
 
 def cache_covers(all_items=False, missing=False, anime_id=None, limit=None):
@@ -28,16 +27,14 @@ def cache_covers(all_items=False, missing=False, anime_id=None, limit=None):
         if Path(local).exists() and not all_items:
             skipped += 1
             continue
-        images = loads(row.get("images"), {})
-        url = images.get("large") or images.get("common") or images.get("medium") or images.get("small") if isinstance(images, dict) else None
-        path = cache_cover(int(row["id"]), url)
+        path = cache_cover(int(row["id"]))
         if path:
             repositories.update_cover_status(int(row["id"]), path, "cached")
             ok += 1
         else:
             repositories.update_cover_status(int(row["id"]), None, "failed")
             failed += 1
-            failures.append(f"{row['id']} {url}")
+            failures.append(f"{row['id']} https://api.bgm.tv/v0/subjects/{row['id']}/image?type=large")
     if failures:
         log_dir = ROOT / "logs"
         log_dir.mkdir(exist_ok=True)

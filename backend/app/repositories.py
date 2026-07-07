@@ -195,24 +195,23 @@ def save_collection(subject_id: int, form: dict):
 
 def iter_covers(missing_only=False, anime_id=None, limit=None):
     cols = get_table_columns("subjects", public_database_name())
-    if "images" not in cols:
-        return []
-    sql = "SELECT id, images FROM subjects WHERE images IS NOT NULL"
+    sql = "SELECT id FROM subjects"
     params = []
+    clauses = []
     if "type" in cols:
-        sql += " AND type=2"
+        clauses.append("type=2")
     if anime_id:
-        sql += " AND id=%s"
+        clauses.append("id=%s")
         params.append(anime_id)
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
     sql += " ORDER BY id"
     if limit:
         sql += " LIMIT %s"
         params.append(limit)
     with get_connection(public_database_name()) as conn, conn.cursor() as cur:
         cur.execute(sql, params)
-        rows = cur.fetchall()
-    # cover state is file-system based in Archive mode, so missing_only filtering happens in tools/cache_covers.py.
-    return rows
+        return cur.fetchall()
 
 
 def update_cover_status(anime_id: int, local_path: str | None, status: str):
