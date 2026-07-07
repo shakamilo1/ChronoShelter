@@ -1,60 +1,63 @@
-# ChronoShelter current schema expectations
+# ChronoShelter Archive schema expectations
 
-ChronoShelter must support existing MariaDB databases. Always run `python tools/inspect_schema.py` before migrations.
+ChronoShelter now uses Bangumi Archive public tables and a separate personal `my_collection` table. Always run `python tools/inspect_schema.py` before migrations or Archive updates.
 
-## bangumi_anime
+## Public Archive tables
 
-### Minimum required to browse
+The public database uses the Archive entity model and may be periodically rebuilt from Archive releases:
 
-- `id` (required primary identifier)
-- `name_jp` or `name_cn` (at least one title is needed for display)
+- `subject`
+- `episode`
+- `person`
+- `character`
+- `subject_person`
+- `subject_character`
+- `subject_relation`
+- `person_character`
+- `person_relation`
 
-### Recommended public-library fields
+Do not create new `bangumi_anime` tables. Old deployments may still have `bangumi_anime`, but the current app does not require it.
 
-- Titles: `name_jp`, `name_cn`, `name_en`
-- Airing: `air_date`, `air_year`, `air_month`, `air_weekday`, `raw_air_date`, `broadcast`
-- Metadata: `eps`, `summary`, `rating_score`, `rating_count`, `rank`, `nsfw`
-- Images: `image_small`, `image_large`, `cover_local_path`, `cover_cache_status`, `cover_cached_at`
-- JSON fields: `tags_json`, `meta_tags_json`, `infobox_json`, `sites_json`
-- Raw fields: `raw_infobox`
+## subject
 
-### Legacy-compatible fields
-
-If the new JSON columns do not exist, the web layer can read legacy fields:
-
-- `tags_json` fallback: `tags`
-- `meta_tags_json` fallback: `meta_tags`
-- `infobox_json` fallback: `infobox`
-- `raw_infobox` is optional; if absent, pages do not fail.
-- `aka_names` is allowed to exist but is not required for the MVP.
-
-### Migration priority
-
-Must migrate for importer writes:
+### Minimum required for the poster wall
 
 - `id`
+- `type` (`type=2` means anime)
+- `name` or `name_cn`
 
-Optional but recommended migration:
+### Recommended fields
 
-- `cover_local_path`, `cover_cache_status`, `cover_cached_at`
-- `broadcast`, `sites_json`
-- `tags_json`, `meta_tags_json`, `infobox_json`, `raw_infobox`
+- `summary`
+- `date`
+- `eps`
+- `score`
+- `rating_count`
+- `rank`
+- `images` JSON
+- `tags` JSON
+- `infobox` JSON
+- `meta` JSON
+- `raw_json` JSON
 
-The importer checks actual columns before writing and only writes columns that exist. Missing optional columns produce warnings that point to migration files.
+## Detail-page related tables
+
+- `episode.subject_id` links episodes to `subject.id`.
+- `subject_person.subject_id` + `subject_person.person_id` links staff/person rows.
+- `subject_character.subject_id` + `subject_character.character_id` links character rows.
+- Relation tables are public Archive data and must never contain personal collection data.
 
 ## my_collection
 
-`my_collection` is user-owned data. Do not drop, truncate, rebuild, or rename it automatically.
+`my_collection` is user-owned data. It is not rebuilt by Archive updates and must never be dropped/truncated/rebuilt by the Archive updater.
 
 ### Identifier field
 
-At least one of these fields must exist so the app can link a collection row to `bangumi_anime.id`:
+At least one of these fields must exist so the app can link collection rows to `subject.id`:
 
-- `bangumi_id`
-- `anime_id`
-- `subject_id`
-
-If none exists, one-click collect and collection editing cannot safely work until a migration adds a nullable mapping field.
+- `subject_id` preferred
+- `bangumi_id` legacy compatible
+- `anime_id` legacy compatible
 
 ### Logical fields and compatible old names
 
@@ -71,15 +74,13 @@ If none exists, one-click collect and collection editing cannot safely work unti
 
 - Only use `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` for existing `my_collection`.
 - All added fields must be nullable.
-- Existing notes and personal ratings must remain untouched unless the user saves the edit form.
+- Existing notes and personal ratings remain untouched unless the user saves the edit form.
 - Always back up first with `mysqldump --single-transaction`.
 
 ## Read-only inspection
-
-Run:
 
 ```bash
 python tools/inspect_schema.py
 ```
 
-The command prints the columns and row counts for `bangumi_anime` and `my_collection` and never modifies the database.
+The command prints columns and row counts for Archive public tables and `my_collection` and never modifies the database.

@@ -22,7 +22,10 @@ def detail(request: Request, anime_id: int):
     anime = repositories.get_anime(anime_id)
     if not anime:
         raise HTTPException(status_code=404, detail="Anime not found")
-    return templates.TemplateResponse("anime_detail.html", {"request": request, "anime": anime})
+    episodes = repositories.list_episodes(anime_id)
+    persons = repositories.list_subject_persons(anime_id)
+    characters = repositories.list_subject_characters(anime_id)
+    return templates.TemplateResponse("anime_detail.html", {"request": request, "anime": anime, "episodes": episodes, "persons": persons, "characters": characters})
 
 @router.get("/anime/{anime_id}/collection/edit")
 def edit_collection(request: Request, anime_id: int):

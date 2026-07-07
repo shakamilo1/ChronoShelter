@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-ID_FIELDS = ("bangumi_id", "anime_id", "subject_id")
+ID_FIELDS = ("subject_id", "bangumi_id", "anime_id")
 COLLECTED_FIELDS = ("collected", "is_collected")
 DATE_FIELDS = ("collection_date", "collect_date", "created_at", "date")
 MEDIA_FIELDS = ("media_type", "medium", "media")

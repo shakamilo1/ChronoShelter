@@ -1,3 +1,3 @@
--- Migration-safe additive changes only. Never drop, truncate, or rebuild existing tables.
-ALTER TABLE bangumi_anime ADD COLUMN IF NOT EXISTS cover_local_path TEXT NULL AFTER image_large;
-ALTER TABLE bangumi_anime ADD COLUMN IF NOT EXISTS broadcast TEXT NULL AFTER cover_local_path;
+-- Deprecated: bangumi_anime is no longer created. Public data now uses Bangumi Archive tables.
+-- Keep this file as a no-op for old deployment scripts.
+SELECT 'ChronoShelter now uses subject/episode/person/character Archive tables; no bangumi_anime migration executed.' AS message;

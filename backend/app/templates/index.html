@@ -10,11 +10,11 @@
   {% set cover = '/' ~ item.cover_local_path if item.cover_local_path else '/static/placeholder.svg' %}
   <article class="card">
     <a href="/anime/{{ item.id }}">
-      <img src="{{ cover }}" alt="{{ item.name_cn or item.name_jp }}">
-      <h2>{{ item.name_cn or item.name_jp }}</h2>
+      <img src="{{ cover }}" alt="{{ item.name_cn or item.name_jp or item.name }}">
+      <h2>{{ item.name_cn or item.name_jp or item.name }}</h2>
     </a>
-    <p class="muted">{{ item.name_jp }}</p>
-    <p>放送：{% if item.air_date %}{{ item.air_date }}{% elif item.raw_air_date %}{{ item.raw_air_date }}{% elif item.air_year %}{{ item.air_year }}{% if item.air_month %}/{{ '%02d'|format(item.air_month) }}{% endif %}{% else %}未定{% endif %}</p>
+    <p class="muted">{{ item.name_jp or item.name }}</p>
+    <p>放送：{{ item.air_date or item.date or '未定' }}</p>
     <p>集数：{{ item.eps if item.eps else '未定' }}</p>
     <p>{% if item.rating_score and item.rating_count %}⭐ {{ item.rating_score }} ({{ item.rating_count }}){% else %}暂无评分{% endif %}</p>
     <div class="collect-row">

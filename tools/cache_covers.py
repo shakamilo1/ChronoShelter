@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app import repositories
 from importer.image_cache import cache_cover
+from app.archive_mapper import loads
 
 
 def cache_covers(all_items=False, missing=False, anime_id=None, limit=None):
@@ -23,11 +24,12 @@ def cache_covers(all_items=False, missing=False, anime_id=None, limit=None):
     ok = failed = skipped = 0
     failures: list[str] = []
     for row in iterable:
-        local = row.get("cover_local_path")
-        if local and Path(local).exists() and not all_items:
+        local = f"media/covers/{row['id']}.jpg"
+        if Path(local).exists() and not all_items:
             skipped += 1
             continue
-        url = row.get("image_large") or row.get("image_small")
+        images = loads(row.get("images"), {})
+        url = images.get("large") or images.get("common") or images.get("medium") or images.get("small") if isinstance(images, dict) else None
         path = cache_cover(int(row["id"]), url)
         if path:
             repositories.update_cover_status(int(row["id"]), path, "cached")

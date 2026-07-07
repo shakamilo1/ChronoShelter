@@ -20,7 +20,7 @@ from importer.image_cache import cache_cover
 from importer.merge_engine import merge_subjects
 
 UPSERT_SQL = """
-INSERT INTO bangumi_anime (
+INSERT INTO subject (
  id, name_jp, name_cn, name_en, type, platform, air_date, air_year, air_month,
  air_weekday, raw_air_date, eps, summary, rating_score, rating_count, `rank`,
  image_small, image_large, cover_local_path, cover_cache_status, cover_cached_at, broadcast, sites_json, tags_json, meta_tags_json, infobox_json, raw_infobox, nsfw
@@ -62,7 +62,7 @@ ON DUPLICATE KEY UPDATE
 """
 
 SAFE_UPSERT_SQL = """
-INSERT INTO bangumi_anime (
+INSERT INTO subject (
  id, name_jp, name_cn, name_en, type, platform, air_date, air_year, air_month,
  air_weekday, raw_air_date, eps, summary, rating_score, rating_count, `rank`,
  image_small, image_large, cover_local_path, cover_cache_status, cover_cached_at, broadcast, sites_json, tags_json, meta_tags_json, infobox_json, raw_infobox, nsfw
@@ -118,11 +118,11 @@ OPTIONAL_MIGRATION_HINTS = {
 
 def build_upsert_sql(row: dict, existing_columns: set[str], safe_mode: bool = False) -> tuple[str, dict]:
     if "id" not in existing_columns:
-        raise RuntimeError("bangumi_anime.id column is required before importing.")
+        raise RuntimeError("subject.id column is required before importing.")
     writable = [key for key, value in row.items() if key in existing_columns]
     missing = [key for key in row if key not in existing_columns and key in OPTIONAL_MIGRATION_HINTS]
     for key in missing:
-        print(f"warning: bangumi_anime.{key} missing; 需要执行 migration {OPTIONAL_MIGRATION_HINTS[key]}", file=sys.stderr)
+        print(f"warning: subject.{key} missing; 需要执行 migration {OPTIONAL_MIGRATION_HINTS[key]}", file=sys.stderr)
     quoted = [f"`{col}`" if col == "rank" else col for col in writable]
     values = [f"%({col})s" for col in writable]
     updates = []
@@ -135,12 +135,12 @@ def build_upsert_sql(row: dict, existing_columns: set[str], safe_mode: bool = Fa
                 updates.append(f"{q}={q}")
             elif col.endswith("_json"):
                 updates.append(f"{q}=COALESCE({q}, VALUES({q}))")
-            elif col in {"platform", "air_date", "air_year", "air_month", "eps", "rating_score", "rating_count", "rank", "cover_cached_at"}:
+            elif col in {"platform", "date", "air_date", "air_year", "air_month", "eps", "score", "rating_score", "rating_count", "rank", "cover_cached_at"}:
                 updates.append(f"{q}=COALESCE({q}, VALUES({q}))")
             else:
                 updates.append(f"{q}=COALESCE(NULLIF({q}, ''), NULLIF(VALUES({q}), ''))")
         else:
-            if col in {"platform", "air_date", "air_year", "air_month", "eps", "rating_score", "rating_count", "rank", "cover_cached_at"}:
+            if col in {"platform", "date", "air_date", "air_year", "air_month", "eps", "score", "rating_score", "rating_count", "rank", "cover_cached_at"}:
                 updates.append(f"{q}=COALESCE(VALUES({q}), {q})")
             elif col.endswith("_json"):
                 updates.append(f"{q}=COALESCE(VALUES({q}), {q})")
@@ -148,7 +148,7 @@ def build_upsert_sql(row: dict, existing_columns: set[str], safe_mode: bool = Fa
                 updates.append(f"{q}=COALESCE(NULLIF(VALUES({q}), ''), {q})")
     if "updated_at" in existing_columns:
         updates.append("updated_at=CURRENT_TIMESTAMP")
-    sql = f"INSERT INTO bangumi_anime ({', '.join(quoted)}) VALUES ({', '.join(values)}) ON DUPLICATE KEY UPDATE {', '.join(updates)}"
+    sql = f"INSERT INTO subject ({', '.join(quoted)}) VALUES ({', '.join(values)}) ON DUPLICATE KEY UPDATE {', '.join(updates)}"
     return sql, {key: row[key] for key in writable}
 
 def normalize_subject(subject: dict, bangumi_data_entry: dict | None = None, cache_images: bool = False) -> dict:
@@ -158,33 +158,20 @@ def normalize_subject(subject: dict, bangumi_data_entry: dict | None = None, cac
         cover_local_path = cache_cover(model.id, model.image_large or model.image_small)
     return {
         "id": model.id,
-        "name_jp": model.name_jp,
+        "name": model.name_jp,
         "name_cn": model.name_cn,
-        "name_en": model.name_en,
-        "type": model.type,
-        "platform": model.platform,
-        "air_date": model.air_date,
-        "air_year": model.air_year,
-        "air_month": model.air_month,
-        "air_weekday": model.air_weekday,
-        "raw_air_date": model.raw_air_date,
+        "type": int(model.type) if model.type and str(model.type).isdigit() else None,
+        "date": model.air_date,
         "eps": model.eps,
         "summary": model.summary,
-        "rating_score": model.rating_score,
+        "score": model.rating_score,
         "rating_count": model.rating_count,
         "rank": model.rank,
-        "image_small": model.image_small,
-        "image_large": model.image_large,
-        "cover_local_path": cover_local_path,
-        "cover_cache_status": "cached" if cover_local_path else None,
-        "cover_cached_at": None,
-        "broadcast": model.broadcast,
-        "sites_json": json.dumps(model.sites or [], ensure_ascii=False),
-        "tags_json": json.dumps(model.tags or [], ensure_ascii=False),
-        "meta_tags_json": json.dumps(model.meta_tags or [], ensure_ascii=False),
-        "infobox_json": json.dumps(model.infobox or [], ensure_ascii=False),
-        "raw_infobox": model.raw_infobox,
-        "nsfw": model.nsfw,
+        "images": json.dumps({"small": model.image_small, "large": model.image_large}, ensure_ascii=False),
+        "tags": json.dumps(model.tags or [], ensure_ascii=False),
+        "meta": json.dumps({"meta_tags": model.meta_tags or [], "sites": model.sites or [], "broadcast": model.broadcast, "nsfw": model.nsfw}, ensure_ascii=False),
+        "infobox": json.dumps(model.infobox or [], ensure_ascii=False),
+        "raw_json": json.dumps(subject, ensure_ascii=False),
     }
 
 
@@ -209,7 +196,7 @@ def import_file(path, limit=None, dry_run=False, only_id=None, safe_mode=False, 
     iterable = iter_subjects(path, limit=limit, only_id=only_id)
     if tqdm:
         iterable = tqdm(iterable, unit="line")
-    existing_columns = get_table_columns("bangumi_anime") if not dry_run else set()
+    existing_columns = get_table_columns("subject") if not dry_run else set()
     if dry_run:
         conn_ctx = None
     else:

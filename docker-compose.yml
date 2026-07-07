@@ -7,7 +7,7 @@ services:
       - "8700:8700"
     volumes:
       - ./media/covers:/app/media/covers
-      - ./data/bangumi-data:/app/data/bangumi-data
+      - ./data/archive:/app/data/archive
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"

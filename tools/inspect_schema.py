@@ -29,8 +29,8 @@ def inspect_table(table_name: str):
 
 def main():
     print("ChronoShelter schema inspection (read-only)")
-    inspect_table("bangumi_anime")
-    inspect_table("my_collection")
+    for table in ("subject", "episode", "person", "character", "subject_person", "subject_character", "subject_relation", "person_character", "person_relation", "my_collection"):
+        inspect_table(table)
 
 
 if __name__ == "__main__":
