@@ -26,6 +26,7 @@ class UnifiedAnimeModel:
     air_month: int | None = None
     raw_air_date: str | None = None
     broadcast: str | None = None
+    sites: list[dict[str, Any]] | None = None
     air_weekday: str | None = None
     eps: int | None = None
     summary: str | None = None
@@ -103,6 +104,7 @@ def merge_subjects(api_subject: dict | None, bangumi_data_entry: dict | None = N
         air_month=_first_present(bd_air_month, api_air_month),
         raw_air_date=_first_present(bd_raw_air_date, api_raw_air_date),
         broadcast=_bangumi_data_broadcast(entry),
+        sites=entry.get("sites") or [],
         air_weekday=infobox_value(infobox, "放送星期"),
         eps=normalize_eps(api_subject.get("eps") or infobox_value(infobox, "话数") or entry.get("eps")),
         summary=api_subject.get("summary") or None,

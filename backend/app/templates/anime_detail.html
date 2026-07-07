@@ -1,17 +1,27 @@
 {% extends "base.html" %}
 {% block title %}{{ anime.name_cn or anime.name_jp }} - ChronoShelter{% endblock %}
 {% block content %}
-{% set cover = '/' ~ anime.cover_local_path if anime.cover_local_path else (anime.image_large or anime.image_small) %}
+{% set cover = '/' ~ anime.cover_local_path if anime.cover_local_path else '/static/placeholder.svg' %}
 <section class="detail">
-  {% if cover %}<img class="cover" src="{{ cover }}" alt="cover">{% endif %}
+  <img class="cover" src="{{ cover }}" alt="cover">
   <div>
     <h1>{{ anime.name_cn or anime.name_jp }}</h1>
     {% if anime.name_jp %}<p class="muted">{{ anime.name_jp }}</p>{% endif %}
     {% if anime.name_en and anime.name_en|lower != 'tv' %}<p class="muted">{{ anime.name_en }}</p>{% endif %}
-    <p>集数：{{ anime.eps if anime.eps else '未定' }}</p>
-    <p>首播：{% if anime.air_date %}{{ anime.air_date }}{% elif anime.raw_air_date %}{{ anime.raw_air_date }}{% elif anime.air_year %}{{ anime.air_year }}{% if anime.air_month %}/{{ anime.air_month }}{% endif %}{% else %}未定{% endif %}</p>
-    {% if anime.broadcast %}<p>放送：{{ anime.broadcast }}</p>{% endif %}
-    <p>{% if anime.rating_score and anime.rating_count %}评分：{{ anime.rating_score }} / {{ anime.rating_count }} 人{% else %}暂无评分{% endif %}</p>
+    <p><strong>集数：</strong>{{ anime.eps if anime.eps else '未定' }}</p>
+    <p><strong>首播时间：</strong>{% if anime.air_date %}{{ anime.air_date }}{% elif anime.raw_air_date %}{{ anime.raw_air_date }}{% elif anime.air_year %}{{ anime.air_year }}{% if anime.air_month %}/{{ anime.air_month }}{% endif %}{% else %}未定{% endif %}</p>
+    {% if anime.air_year or anime.air_month or anime.air_weekday %}<p><strong>放送年份/月/星期：</strong>{{ anime.air_year or '未知' }} / {{ anime.air_month or '未知' }} / {{ anime.air_weekday or '未知' }}</p>{% endif %}
+    {% if anime.broadcast %}<p><strong>Broadcast：</strong>{{ anime.broadcast }}</p>{% endif %}
+    <p>{% if anime.rating_score and anime.rating_count %}<strong>官方评分：</strong>{{ anime.rating_score }} / {{ anime.rating_count }} 人{% else %}<strong>官方评分：</strong>暂无评分{% endif %}</p>
+    <hr>
+    <p><strong>收藏状态：</strong>{% if anime.collected %}已收藏{% else %}未收藏{% endif %}</p>
+    <p><strong>收藏日期：</strong>{{ anime.collection_date or '未设置' }}</p>
+    <p><strong>我的评分：</strong>{{ anime.my_rating if anime.my_rating is not none else '未评分' }}</p>
+    {% if anime.subtitle_group %}<p><strong>字幕组：</strong>{{ anime.subtitle_group }}</p>{% endif %}
+    {% if anime.source_site %}<p><strong>来源网站：</strong>{{ anime.source_site }}</p>{% endif %}
+    {% if anime.media_type %}<p><strong>媒介类型：</strong>{{ anime.media_type }}</p>{% endif %}
+    {% if anime.notes %}<p><strong>备注：</strong>{{ anime.notes }}</p>{% endif %}
+    <p><a class="button-link" href="/anime/{{ anime.id }}/collection/edit">编辑收藏</a></p>
     {% if anime.summary %}<p class="summary">{{ anime.summary }}</p>{% endif %}
   </div>
 </section>
@@ -20,4 +30,5 @@
 </dl></section>
 <section><h2>标签</h2><div class="tags">{% for tag in anime.tags %}<span>{{ tag.name }}{% if tag.count %} {{ tag.count }}{% endif %}</span>{% endfor %}</div></section>
 <section><h2>Meta Tags</h2><div class="tags">{% for tag in anime.meta_tags %}<span>{{ tag }}</span>{% endfor %}</div></section>
+{% if anime.sites %}<section><h2>站点信息</h2><div class="tags">{% for site in anime.sites %}<span>{{ site.site or site.name or site }}</span>{% endfor %}</div></section>{% endif %}
 {% endblock %}

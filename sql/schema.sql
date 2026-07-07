@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS bangumi_anime (
   air_month INT NULL,
   air_weekday VARCHAR(64) NULL,
   raw_air_date VARCHAR(128) NULL,
+  broadcast TEXT NULL,
+  sites_json JSON NULL,
   eps INT NULL,
   summary TEXT,
   rating_score FLOAT NULL,
@@ -18,7 +20,8 @@ CREATE TABLE IF NOT EXISTS bangumi_anime (
   image_small TEXT NULL,
   image_large TEXT NULL,
   cover_local_path TEXT NULL,
-  broadcast TEXT NULL,
+  cover_cache_status VARCHAR(32) NULL,
+  cover_cached_at DATETIME NULL,
   tags_json JSON,
   meta_tags_json JSON,
   infobox_json JSON,
@@ -27,5 +30,23 @@ CREATE TABLE IF NOT EXISTS bangumi_anime (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_air_year_month (air_year, air_month),
+  INDEX idx_cover_cache_status (cover_cache_status),
   FULLTEXT INDEX ft_names (name_jp, name_cn, name_en)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS my_collection (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  bangumi_id BIGINT NOT NULL,
+  collected BOOLEAN NOT NULL DEFAULT TRUE,
+  collection_date DATE NULL,
+  media_type VARCHAR(128) NULL,
+  subtitle_group VARCHAR(255) NULL,
+  source_site VARCHAR(255) NULL,
+  my_rating FLOAT NULL,
+  notes TEXT NULL,
+  extra_json JSON NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_my_collection_bangumi_id (bangumi_id),
+  CONSTRAINT fk_my_collection_bangumi FOREIGN KEY (bangumi_id) REFERENCES bangumi_anime(id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

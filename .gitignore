@@ -10,3 +10,4 @@ venv/
 /media/covers/
 *.db
 .DS_Store
+/logs/

@@ -22,12 +22,12 @@ UPSERT_SQL = """
 INSERT INTO bangumi_anime (
  id, name_jp, name_cn, name_en, type, platform, air_date, air_year, air_month,
  air_weekday, raw_air_date, eps, summary, rating_score, rating_count, `rank`,
- image_small, image_large, cover_local_path, broadcast, tags_json, meta_tags_json, infobox_json, raw_infobox, nsfw
+ image_small, image_large, cover_local_path, cover_cache_status, cover_cached_at, broadcast, sites_json, tags_json, meta_tags_json, infobox_json, raw_infobox, nsfw
 ) VALUES (
  %(id)s, %(name_jp)s, %(name_cn)s, %(name_en)s, %(type)s, %(platform)s, %(air_date)s,
  %(air_year)s, %(air_month)s, %(air_weekday)s, %(raw_air_date)s, %(eps)s, %(summary)s,
  %(rating_score)s, %(rating_count)s, %(rank)s, %(image_small)s, %(image_large)s,
- %(cover_local_path)s, %(broadcast)s, %(tags_json)s, %(meta_tags_json)s, %(infobox_json)s, %(raw_infobox)s, %(nsfw)s
+ %(cover_local_path)s, %(cover_cache_status)s, %(cover_cached_at)s, %(broadcast)s, %(sites_json)s, %(tags_json)s, %(meta_tags_json)s, %(infobox_json)s, %(raw_infobox)s, %(nsfw)s
 )
 ON DUPLICATE KEY UPDATE
  name_jp=COALESCE(NULLIF(VALUES(name_jp), ''), name_jp),
@@ -48,7 +48,10 @@ ON DUPLICATE KEY UPDATE
  image_small=COALESCE(NULLIF(VALUES(image_small), ''), image_small),
  image_large=COALESCE(NULLIF(VALUES(image_large), ''), image_large),
  cover_local_path=COALESCE(NULLIF(VALUES(cover_local_path), ''), cover_local_path),
+ cover_cache_status=COALESCE(NULLIF(VALUES(cover_cache_status), ''), cover_cache_status),
+ cover_cached_at=COALESCE(VALUES(cover_cached_at), cover_cached_at),
  broadcast=COALESCE(NULLIF(VALUES(broadcast), ''), broadcast),
+ sites_json=COALESCE(VALUES(sites_json), sites_json),
  tags_json=COALESCE(VALUES(tags_json), tags_json),
  meta_tags_json=COALESCE(VALUES(meta_tags_json), meta_tags_json),
  infobox_json=COALESCE(VALUES(infobox_json), infobox_json),
@@ -61,12 +64,12 @@ SAFE_UPSERT_SQL = """
 INSERT INTO bangumi_anime (
  id, name_jp, name_cn, name_en, type, platform, air_date, air_year, air_month,
  air_weekday, raw_air_date, eps, summary, rating_score, rating_count, `rank`,
- image_small, image_large, cover_local_path, broadcast, tags_json, meta_tags_json, infobox_json, raw_infobox, nsfw
+ image_small, image_large, cover_local_path, cover_cache_status, cover_cached_at, broadcast, sites_json, tags_json, meta_tags_json, infobox_json, raw_infobox, nsfw
 ) VALUES (
  %(id)s, %(name_jp)s, %(name_cn)s, %(name_en)s, %(type)s, %(platform)s, %(air_date)s,
  %(air_year)s, %(air_month)s, %(air_weekday)s, %(raw_air_date)s, %(eps)s, %(summary)s,
  %(rating_score)s, %(rating_count)s, %(rank)s, %(image_small)s, %(image_large)s,
- %(cover_local_path)s, %(broadcast)s, %(tags_json)s, %(meta_tags_json)s, %(infobox_json)s, %(raw_infobox)s, %(nsfw)s
+ %(cover_local_path)s, %(cover_cache_status)s, %(cover_cached_at)s, %(broadcast)s, %(sites_json)s, %(tags_json)s, %(meta_tags_json)s, %(infobox_json)s, %(raw_infobox)s, %(nsfw)s
 )
 ON DUPLICATE KEY UPDATE
  name_jp=COALESCE(NULLIF(name_jp, ''), NULLIF(VALUES(name_jp), '')),
@@ -87,7 +90,10 @@ ON DUPLICATE KEY UPDATE
  image_small=COALESCE(NULLIF(image_small, ''), NULLIF(VALUES(image_small), '')),
  image_large=COALESCE(NULLIF(image_large, ''), NULLIF(VALUES(image_large), '')),
  cover_local_path=COALESCE(NULLIF(cover_local_path, ''), NULLIF(VALUES(cover_local_path), '')),
+ cover_cache_status=COALESCE(NULLIF(cover_cache_status, ''), NULLIF(VALUES(cover_cache_status), '')),
+ cover_cached_at=COALESCE(cover_cached_at, VALUES(cover_cached_at)),
  broadcast=COALESCE(NULLIF(broadcast, ''), NULLIF(VALUES(broadcast), '')),
+ sites_json=COALESCE(sites_json, VALUES(sites_json)),
  tags_json=COALESCE(tags_json, VALUES(tags_json)),
  meta_tags_json=COALESCE(meta_tags_json, VALUES(meta_tags_json)),
  infobox_json=COALESCE(infobox_json, VALUES(infobox_json)),
@@ -121,7 +127,10 @@ def normalize_subject(subject: dict, bangumi_data_entry: dict | None = None, cac
         "image_small": model.image_small,
         "image_large": model.image_large,
         "cover_local_path": cover_local_path,
+        "cover_cache_status": "cached" if cover_local_path else None,
+        "cover_cached_at": None,
         "broadcast": model.broadcast,
+        "sites_json": json.dumps(model.sites or [], ensure_ascii=False),
         "tags_json": json.dumps(model.tags or [], ensure_ascii=False),
         "meta_tags_json": json.dumps(model.meta_tags or [], ensure_ascii=False),
         "infobox_json": json.dumps(model.infobox or [], ensure_ascii=False),

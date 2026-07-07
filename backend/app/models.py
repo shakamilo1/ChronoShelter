@@ -23,7 +23,10 @@ class Anime:
     image_small: str | None
     image_large: str | None
     cover_local_path: str | None
+    cover_cache_status: str | None
+    cover_cached_at: datetime | None
     broadcast: str | None
+    sites_json: Any
     tags_json: Any
     meta_tags_json: Any
     infobox_json: Any

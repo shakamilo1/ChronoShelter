@@ -1,88 +1,71 @@
 # ChronoShelter
 
-ChronoShelter 是一个本地 Bangumi 动画资料库 MVP。它读取 Bangumi `subject.jsonlines`，融合可选的 `bangumi-data/dist/data.json`，将动画条目安全导入 MySQL，并通过 FastAPI + Jinja2 模板提供动画列表、搜索和详情页。
+ChronoShelter 是“公共番剧资料库 + 个人收藏系统”。公共资料保存在 `bangumi_anime`，个人收藏保存在 `my_collection`；导入、迁移和更新默认以保护现有数据为第一优先级。
 
 ## 完整项目结构
 
 ```text
 ChronoShelter/
-├─ backend/
-│  ├─ app/
-│  │  ├─ main.py
-│  │  ├─ config.py
-│  │  ├─ database.py
-│  │  ├─ models.py
-│  │  ├─ repositories.py
-│  │  ├─ routers/
-│  │  │  ├─ anime.py
-│  │  │  └─ health.py
-│  │  ├─ templates/
-│  │  │  ├─ base.html
-│  │  │  ├─ index.html
-│  │  │  └─ anime_detail.html
-│  │  └─ static/style.css
-│  └─ requirements.txt
-├─ importer/
-│  ├─ import_subject_jsonlines.py
-│  ├─ bangumi_data_sync.py
-│  ├─ merge_engine.py
-│  ├─ image_cache.py
-│  ├─ infobox_parser.py
-│  ├─ normalizer.py
-│  └─ README.md
+├─ backend/app/              # FastAPI + Jinja2 网站
+│  ├─ routers/anime.py       # 海报墙、详情、收藏、编辑收藏
+│  ├─ templates/             # base/index/detail/collection_edit
+│  └─ static/                # CSS 与默认占位图
+├─ importer/                 # subject.jsonlines、bangumi-data、merge、图片缓存核心逻辑
+├─ tools/
+│  ├─ update_bangumi_data.py # data.json 下载/检查/替换
+│  └─ cache_covers.py        # 本地海报缓存命令
 ├─ sql/
-│  ├─ schema.sql
-│  └─ migrations/001_add_sync_columns.sql
-├─ tests/
-├─ data/              # 本地 bangumi-data 缓存，gitignore
-├─ media/covers/      # 本地封面缓存，gitignore
+│  ├─ schema.sql             # 首次初始化 schema
+│  └─ migrations/            # 只做安全增量迁移
+├─ data/bangumi-data/        # data.json 挂载目录，gitignore
+├─ media/covers/             # 本地海报挂载目录，gitignore
+├─ docker-compose.yml
+├─ Dockerfile
 ├─ .env.example
-├─ README.md
-└─ .gitignore
+└─ README.md
 ```
 
 ## 数据流架构图
 
 ```text
-Bangumi subject.jsonlines ─┐
-                           ├─ importer/merge_engine.py ── UnifiedAnimeModel ── safe UPSERT ── MySQL bangumi_anime
-bangumi-data data.json ────┘              │
-                                          └─ image_cache.py ── media/covers/{anime_id}.jpg
-
-FastAPI/Jinja2 ── repositories.py ── MySQL ── 列表 / 搜索 / 详情页
+subject.jsonlines ─┐
+                   ├─ merge_engine.py ── UnifiedAnimeModel ── safe UPSERT ── bangumi_anime ── 海报墙/详情/搜索
+bangumi-data ──────┘         │                                      │
+                             └─ sites/broadcast/time                │
+                                                                    ├─ my_collection ── 收藏状态/评分/备注
+cache_covers.py ── image_cache.py ── media/covers/{bangumi_id}.jpg ─┘
 ```
 
-- Bangumi API subject 优先提供 `infobox`、`tags`、`summary`、评分和图片 URL。
-- bangumi-data 优先提供更结构化的首播时间 `air_date` 和 `broadcast`。
-- 所有数据库写入都必须经过 merge layer，bangumi-data 同步本身绝不直接写主数据库。
+## 数据库定位
+
+- `bangumi_anime`：公共 Bangumi 动画资料库，支持从 `subject.jsonlines` 全量导入，也支持从 bangumi-data 更新放送时间、broadcast、站点信息。禁止直接删除。
+- `my_collection`：用户个人收藏数据，绝对不能丢，保存收藏状态、收藏日期、媒介类型、字幕组、来源网站、我的评分、备注和其他信息。
 
 ## 安装依赖
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
+source .venv/bin/activate
 pip install -r backend/requirements.txt
 ```
 
-## 配置 .env
-
-复制示例配置，不要把真实密码提交到 Git：
+## 配置 .env / MariaDB
 
 ```bash
 cp .env.example .env
 ```
 
-按本地 MySQL 修改：
+NAS / Docker 场景推荐让容器连接宿主机 MariaDB：
 
 ```dotenv
-CHRONOSHELTER_DB_HOST=127.0.0.1
+CHRONOSHELTER_DB_HOST=host.docker.internal
 CHRONOSHELTER_DB_PORT=3306
 CHRONOSHELTER_DB_USER=chronoshelter
 CHRONOSHELTER_DB_PASSWORD=change-me
 CHRONOSHELTER_DB_NAME=chronoshelter
 ```
 
-## 初始化或迁移数据库
+## 初始化或安全迁移数据库
 
 首次初始化：
 
@@ -91,120 +74,132 @@ mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS chronoshelter CHARACTER SET u
 mysql -u root -p chronoshelter < sql/schema.sql
 ```
 
-已有 ChronoShelter v1 数据库时，不要 drop/truncate/rebuild 表，只运行增量迁移：
+已有旧库时必须先备份，再迁移：
 
 ```bash
+mkdir -p backups
+mysqldump --single-transaction -u root -p chronoshelter bangumi_anime my_collection > backups/chronoshelter_before_migration.sql
 mysql -u root -p chronoshelter < sql/migrations/001_add_sync_columns.sql
+mysql -u root -p chronoshelter < sql/migrations/002_safe_my_collection_and_cover_cache.sql
 ```
 
-## 如何同步 bangumi-data
+迁移原则：不 `DROP my_collection`，不 `TRUNCATE my_collection`，不清空收藏数据，不覆盖已有收藏备注和个人评分；如果要回滚，先停止 Web，再用 `backups/chronoshelter_before_migration.sql` 恢复。
 
-自动下载最新 `data.json`：
+## NAS 部署
 
 ```bash
-python importer/bangumi_data_sync.py --download
+mkdir -p media/covers data/bangumi-data
+cp .env.example .env
+# 修改 .env 中 MariaDB 用户、密码、数据库名
+docker compose up -d --build
 ```
 
-检查远端是否有更新但不替换本地文件：
+- Web 端口：`8700`
+- 静态图片路径：`/media/covers/`
+- 图片挂载：`./media/covers:/app/media/covers`
+- bangumi-data 挂载：`./data/bangumi-data:/app/data/bangumi-data`
+
+如果 MariaDB 不在宿主机，请把 `.env` 中的 `CHRONOSHELTER_DB_HOST` 改成 NAS 上 MariaDB 的实际地址。
+
+## 更新 bangumi-data
+
+数据源使用 raw URL：`https://raw.githubusercontent.com/bangumi-data/bangumi-data/master/dist/data.json`。
 
 ```bash
-python importer/bangumi_data_sync.py --check-update
+python tools/update_bangumi_data.py --check
+python tools/update_bangumi_data.py --download
+python tools/update_bangumi_data.py --file ./data.json
 ```
 
-用户手动下载或替换 `data.json`：
+文件保存到 `data/bangumi-data/data.json`。更新前会备份旧文件到 `data/bangumi-data/backups/data_YYYYMMDD_HHMMSS.json`。该操作不写 `bangumi_anime`，也绝不写 `my_collection`。
 
-```bash
-python importer/bangumi_data_sync.py --file ./data.json
-```
+## 导入或更新 bangumi_anime
 
-同步结果保存到 `data/bangumi_data.json`；如果本地已有文件，会先复制一份到 `data/backups/`。该同步步骤只维护本地 JSON 文件，不会写 MySQL。
-
-## 如何保护旧数据库
-
-ChronoShelter 遵守以下规则：
-
-- 永不执行 `DROP TABLE`、`TRUNCATE` 或重建已有表。
-- schema 使用 `CREATE TABLE IF NOT EXISTS`；迁移只做 `ADD COLUMN IF NOT EXISTS`。
-- 导入使用 `INSERT ... ON DUPLICATE KEY UPDATE`。
-- 开启 `--safe-mode` 后，只填充缺失字段；已有 `name_cn`、`name_en`、`infobox`、图片、日期、摘要等字段不会被覆盖。
-- 远端为空值时不会覆盖本地有效值。
-
-## 如何运行 importer
-
-试跑 100 条，不写数据库：
+试跑：
 
 ```bash
 python importer/import_subject_jsonlines.py --file /path/to/subject.jsonlines --limit 100 --dry-run
 ```
 
-融合本地 bangumi-data，并用 safe-mode 保护旧数据：
+安全导入并融合 bangumi-data：
 
 ```bash
-python importer/import_subject_jsonlines.py --file /path/to/subject.jsonlines --bangumi-data data/bangumi_data.json --safe-mode
+python importer/import_subject_jsonlines.py --file /path/to/subject.jsonlines --bangumi-data data/bangumi-data/data.json --safe-mode
 ```
 
-调试单个 Bangumi 条目：
+单条调试：
 
 ```bash
-python importer/import_subject_jsonlines.py --file /path/to/subject.jsonlines --id 285757 --bangumi-data data/bangumi_data.json --safe-mode --dry-run
-python importer/import_subject_jsonlines.py --file /path/to/subject.jsonlines --id 285757 --bangumi-data data/bangumi_data.json --safe-mode
+python importer/import_subject_jsonlines.py --file /path/to/subject.jsonlines --id 285757 --bangumi-data data/bangumi-data/data.json --safe-mode --dry-run
 ```
 
-如需在导入时顺便缓存封面，可以显式加 `--cache-covers`。默认不下载图片，避免 3 万+ 条导入时被网络 I/O 阻塞。
+`--safe-mode` 只填补缺失字段，不用空值覆盖有效值，不覆盖 `my_collection`。
 
-## 图片缓存机制
+## 图片缓存
 
-- 封面缓存模块为 `importer/image_cache.py`。
-- 本地保存路径为 `media/covers/{anime_id}.jpg`。
-- 数据库保存 `cover_local_path`，页面优先展示本地缓存；没有缓存时回退到远端 URL。
-- 缓存按 `anime_id` 去重，文件已存在时不会重复下载。
-- 默认 lazy 策略：导入不下载图片；需要时再用 `--cache-covers` 或后续任务触发下载。
+页面不直接强依赖远程图片：有本地缓存显示本地海报；无缓存显示默认占位图。后台用命令缓存图片：
+
+```bash
+python tools/cache_covers.py --missing
+python tools/cache_covers.py --all
+python tools/cache_covers.py --id 285757
+python tools/cache_covers.py --missing --limit 100
+```
+
+缓存路径：`media/covers/{bangumi_id}.jpg`。命令有进度条，会跳过已存在文件，失败记录写入 `logs/cover_failures.log`，可断点式重复运行。
 
 ## 启动网站
 
+本地：
+
 ```bash
-uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8700
 ```
 
-打开：
+Docker / NAS：
 
-- 首页：http://127.0.0.1:8000/
-- 健康检查：http://127.0.0.1:8000/health
-- 详情页：http://127.0.0.1:8000/anime/285757
+```bash
+docker compose up -d
+```
 
-## 如何验证数据正确性
+访问：`http://<NAS-IP>:8700/`。
 
-1. `python importer/import_subject_jsonlines.py --file /path/to/subject.jsonlines --id 285757 --bangumi-data data/bangumi_data.json --safe-mode --dry-run`，确认输出 `imported=1 skipped=0 errors=0`。
-2. 执行正式导入后，用 SQL 检查关键字段：
+## 如何验证一键收藏
+
+1. 打开海报墙 `/`。
+2. 找到未收藏卡片，点击“一键收藏”。
+3. 页面返回后按钮变成“已收藏”。
+4. SQL 验证：
    ```sql
-   SELECT id, name_cn, name_en, air_date, air_year, air_month, broadcast, eps FROM bangumi_anime WHERE id = 285757;
+   SELECT bangumi_id, collected, collection_date FROM my_collection WHERE bangumi_id = 285757;
    ```
-3. 打开详情页，确认标题、集数、评分、Infobox、tags、meta_tags 正常展示。
-4. 对已有旧数据重复导入并加 `--safe-mode`，确认原有非空字段没有被覆盖。
 
-## 常见问题
+## 如何验证详情页
 
-### Windows 控制台乱码
+1. 打开 `/anime/285757`。
+2. 确认公共字段：标题、日文名、英文名、海报、首播时间、年份/月/星期、集数、官方评分、简介、tags、meta_tags、infobox。
+3. 确认个人字段：收藏状态、收藏日期、我的评分、字幕组、来源网站、备注。
+4. 点击“编辑收藏”，修改字段并回车保存，返回详情页后确认更新。
 
-请使用 UTF-8 控制台：
+## 导入旧 my_collection
 
-```powershell
-chcp 65001
-$env:PYTHONUTF8=1
+如果旧表结构不同，请先导出：
+
+```bash
+mysqldump --single-transaction -u root -p chronoshelter my_collection > backups/my_collection_legacy.sql
 ```
 
-### 数据库连接失败
+然后根据旧字段映射插入新结构。示例：
 
-检查 `.env` 中的 host、port、user、password、database 是否正确；确认 MySQL 服务已启动；确认已执行 `sql/schema.sql` 或增量迁移。
+```sql
+INSERT INTO my_collection (bangumi_id, collected, collection_date, media_type, subtitle_group, source_site, my_rating, notes, extra_json)
+SELECT bangumi_id, collected, collection_date, media_type, subtitle_group, source_site, my_rating, notes, extra_json
+FROM my_collection_legacy_backup
+ON DUPLICATE KEY UPDATE
+  collected = my_collection.collected,
+  collection_date = COALESCE(my_collection.collection_date, VALUES(collection_date)),
+  my_rating = COALESCE(my_collection.my_rating, VALUES(my_rating)),
+  notes = COALESCE(my_collection.notes, VALUES(notes));
+```
 
-### name_en 为什么不会显示 TV？
-
-Bangumi 的 `meta_tags` 或别名中可能出现 `TV`、`漫画改` 等分类词。ChronoShelter 的 normalizer 只接受 ASCII 且包含英文字母的英文标题候选，并过滤 `TV` 等非标题值；详情页也会防止把 `TV` 当英文标题展示。
-
-## 后续增强方向
-
-- 独立封面下载队列和失败重试。
-- 分页、排序和高级筛选。
-- SQLAlchemy/Alembic 迁移管理。
-- 后台导入任务和导入日志页面。
-- Docker Compose 一键启动 MySQL + Web。
+该示例保留已有备注和个人评分优先。

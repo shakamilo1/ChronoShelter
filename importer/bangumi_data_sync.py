@@ -9,8 +9,8 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 DEFAULT_SOURCE_URL = "https://raw.githubusercontent.com/bangumi-data/bangumi-data/master/dist/data.json"
-DATA_DIR = Path(__file__).resolve().parents[1] / "data"
-DATA_FILE = DATA_DIR / "bangumi_data.json"
+DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "bangumi-data"
+DATA_FILE = DATA_DIR / "data.json"
 BACKUP_DIR = DATA_DIR / "backups"
 
 
@@ -29,7 +29,7 @@ def _backup_existing() -> Path | None:
         return None
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup = BACKUP_DIR / f"bangumi_data.{stamp}.json"
+    backup = BACKUP_DIR / f"data_{stamp}.json"
     shutil.copy2(DATA_FILE, backup)
     return backup
 
