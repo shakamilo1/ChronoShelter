@@ -11,6 +11,7 @@ SUBTITLE_FIELDS = ("subtitle_group", "subgroup", "fansub")
 SOURCE_FIELDS = ("source_site", "source", "site")
 RATING_FIELDS = ("my_rating", "rating")
 NOTES_FIELDS = ("notes", "note", "remark")
+PROGRESS_FIELDS = ("progress", "watch_progress", "watched_eps")
 EXTRA_FIELDS = ("extra_json", "extra", "other")
 
 
@@ -24,6 +25,7 @@ class CollectionFieldMap:
     source_site: str | None
     my_rating: str | None
     notes: str | None
+    progress: str | None
     extra: str | None
 
 
@@ -41,6 +43,7 @@ def build_collection_field_map(columns: set[str]) -> CollectionFieldMap:
         source_site=_pick(columns, SOURCE_FIELDS),
         my_rating=_pick(columns, RATING_FIELDS),
         notes=_pick(columns, NOTES_FIELDS),
+        progress=_pick(columns, PROGRESS_FIELDS),
         extra=_pick(columns, EXTRA_FIELDS),
     )
 
@@ -56,5 +59,6 @@ def normalize_collection_row(row: dict[str, Any] | None, fmap: CollectionFieldMa
         "source_site": row.get(fmap.source_site) if fmap.source_site else None,
         "my_rating": row.get(fmap.my_rating) if fmap.my_rating else None,
         "notes": row.get(fmap.notes) if fmap.notes else None,
+        "progress": row.get(fmap.progress) if fmap.progress else None,
         "extra_json": row.get(fmap.extra) if fmap.extra else None,
     }

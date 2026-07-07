@@ -1,86 +1,53 @@
-# ChronoShelter Archive schema expectations
+# ChronoShelter data-layer expectations
 
-ChronoShelter now uses Bangumi Archive public tables and a separate personal `my_collection` table. Always run `python tools/inspect_schema.py` before migrations or Archive updates.
+This PR only changes application architecture. It must not execute database modifications.
 
-## Public Archive tables
+## Databases
 
-The public database uses the Archive entity model and may be periodically rebuilt from Archive releases:
+- `chrono_bangumi`: public Bangumi Archive data; can be fully rebuilt from Archive releases.
+- `chrono_library`: personal data; must be permanently preserved.
 
-- `subject`
-- `episode`
-- `person`
-- `character`
-- `subject_person`
-- `subject_character`
-- `subject_relation`
-- `person_character`
-- `person_relation`
+## Public database: chrono_bangumi
 
-Do not create new `bangumi_anime` tables. Old deployments may still have `bangumi_anime`, but the current app does not require it.
+Use Bangumi Archive table names exactly:
 
-## subject
+- `subjects`
+- `episodes`
+- `persons`
+- `characters`
+- `subject_persons`
+- `subject_characters`
+- `subject_relations`
+- `person_characters`
+- `person_relations`
 
-### Minimum required for the poster wall
+Do not create `bangumi_anime` or an `anime` table.
 
-- `id`
-- `type` (`type=2` means anime)
-- `name` or `name_cn`
+The poster wall reads `subjects(type=2)`. Detail pages read one subject plus related episodes, persons, characters, and collection data.
 
-### Recommended fields
+## Personal database: chrono_library
 
-- `summary`
-- `date`
-- `eps`
-- `score`
-- `rating_count`
-- `rank`
-- `images` JSON
-- `tags` JSON
-- `infobox` JSON
-- `meta` JSON
-- `raw_json` JSON
+Use `collections` for user-owned data. Archive updates must never rebuild or overwrite this table.
 
-## Detail-page related tables
+Recommended logical fields:
 
-- `episode.subject_id` links episodes to `subject.id`.
-- `subject_person.subject_id` + `subject_person.person_id` links staff/person rows.
-- `subject_character.subject_id` + `subject_character.character_id` links character rows.
-- Relation tables are public Archive data and must never contain personal collection data.
+- `subject_id`
+- `collected` / `is_collected`
+- `collection_date` / `collect_date` / `created_at` / `date`
+- `media_type` / `medium` / `media`
+- `subtitle_group` / `subgroup` / `fansub`
+- `source_site` / `source` / `site`
+- `my_rating` / `rating`
+- `notes` / `note` / `remark`
+- `progress` / `watch_progress` / `watched_eps`
+- `extra_json` / `extra` / `other`
 
-## my_collection
+The application uses `backend/app/collection_mapper.py` to map old field names to these logical fields.
 
-`my_collection` is user-owned data. It is not rebuilt by Archive updates and must never be dropped/truncated/rebuilt by the Archive updater.
-
-### Identifier field
-
-At least one of these fields must exist so the app can link collection rows to `subject.id`:
-
-- `subject_id` preferred
-- `bangumi_id` legacy compatible
-- `anime_id` legacy compatible
-
-### Logical fields and compatible old names
-
-- Collected status: `collected` / `is_collected`
-- Collection date: `collection_date` / `collect_date` / `created_at` / `date`
-- Media type: `media_type` / `medium` / `media`
-- Subtitle group: `subtitle_group` / `subgroup` / `fansub`
-- Source site: `source_site` / `source` / `site`
-- Personal rating: `my_rating` / `rating`
-- Notes: `notes` / `note` / `remark`
-- Other data: `extra_json` / `extra` / `other`
-
-### Migration rules
-
-- Only use `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` for existing `my_collection`.
-- All added fields must be nullable.
-- Existing notes and personal ratings remain untouched unless the user saves the edit form.
-- Always back up first with `mysqldump --single-transaction`.
-
-## Read-only inspection
+## Inspection
 
 ```bash
 python tools/inspect_schema.py
 ```
 
-The command prints columns and row counts for Archive public tables and `my_collection` and never modifies the database.
+The tool reads both configured databases and prints Archive table and `collections` columns/row counts. It does not modify data.

@@ -18,6 +18,7 @@
     {% if anime.source_site %}<p><strong>来源网站：</strong>{{ anime.source_site }}</p>{% endif %}
     {% if anime.media_type %}<p><strong>媒介类型：</strong>{{ anime.media_type }}</p>{% endif %}
     {% if anime.notes %}<p><strong>备注：</strong>{{ anime.notes }}</p>{% endif %}
+    {% if anime.progress %}<p><strong>观看进度：</strong>{{ anime.progress }}</p>{% endif %}
     <p><a class="button-link" href="/anime/{{ anime.id }}/collection/edit">编辑收藏</a></p>
     {% if anime.summary %}<p class="summary">{{ anime.summary }}</p>{% endif %}
   </div>

@@ -15,15 +15,15 @@ from app.config import get_settings
 from app.database import get_connection
 
 ARCHIVE_TABLES = [
-    "subject",
-    "episode",
-    "person",
-    "character",
-    "subject_person",
-    "subject_character",
-    "subject_relation",
-    "person_character",
-    "person_relation",
+    "subjects",
+    "episodes",
+    "persons",
+    "characters",
+    "subject_persons",
+    "subject_characters",
+    "subject_relations",
+    "person_characters",
+    "person_relations",
 ]
 
 
@@ -46,14 +46,14 @@ def extract_zip(zip_path: Path, out_dir: Path) -> Path:
 
 def create_temp_database(name: str):
     settings = get_settings()
-    with get_connection() as conn, conn.cursor() as cur:
+    with get_connection("__server__") as conn, conn.cursor() as cur:
         cur.execute(f"CREATE DATABASE IF NOT EXISTS `{name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
     print(f"created_temp_database={name}")
 
 
 def validate_temp_database(name: str) -> bool:
     settings = get_settings()
-    with get_connection() as conn, conn.cursor() as cur:
+    with get_connection("__server__") as conn, conn.cursor() as cur:
         cur.execute("SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME=%s", (name,))
         if not cur.fetchone():
             print(f"validation_failed=temp database {name} missing")
@@ -74,9 +74,10 @@ def plan_swap(temp_db: str):
     settings = get_settings()
     print("Archive swap is intentionally not automatic in MVP.")
     print(f"validated_temp_db={temp_db}")
-    print(f"production_db={settings.db_name}")
+    print(f"public_db={settings.public_db_name}")
+    print(f"library_db={settings.library_db_name}")
     print("Review the temp database, take a backup, then swap Archive public tables during a maintenance window.")
-    print("my_collection is not part of ARCHIVE_TABLES and must never be swapped or rebuilt by Archive updates.")
+    print("collections is in the library database and is not part of ARCHIVE_TABLES and must never be swapped or rebuilt by Archive updates.")
 
 
 def main():

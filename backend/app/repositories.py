@@ -1,23 +1,23 @@
 import json
 from .archive_mapper import normalize_subject_row
 from .collection_mapper import build_collection_field_map, normalize_collection_row
-from .database import get_connection
+from .database import get_connection, library_database_name, public_database_name
 from .schema_utils import get_table_columns, table_exists
 
 
 def _collection_field_map():
-    return build_collection_field_map(get_table_columns("my_collection"))
+    return build_collection_field_map(get_table_columns("collections", library_database_name()))
 
 
 def _fetch_collections(subject_ids):
-    if not subject_ids or not table_exists("my_collection"):
+    if not subject_ids or not table_exists("collections", library_database_name()):
         return {}
     fmap = _collection_field_map()
     if not fmap.id_field:
         return {}
     placeholders = ",".join(["%s"] * len(subject_ids))
-    with get_connection() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT * FROM my_collection WHERE `{fmap.id_field}` IN ({placeholders})", subject_ids)
+    with get_connection(library_database_name()) as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT * FROM collections WHERE `{fmap.id_field}` IN ({placeholders})", subject_ids)
         rows = cur.fetchall()
     return {int(row[fmap.id_field]): normalize_collection_row(row, fmap) for row in rows if row.get(fmap.id_field) is not None}
 
@@ -30,8 +30,8 @@ def _merge_collection(subject_row, collection_map):
 
 
 def list_anime(q: str | None = None, limit: int = 40, offset: int = 0):
-    cols = get_table_columns("subject")
-    sql = "SELECT * FROM subject WHERE type=2" if "type" in cols else "SELECT * FROM subject"
+    cols = get_table_columns("subjects", public_database_name())
+    sql = "SELECT * FROM subjects WHERE type=2" if "type" in cols else "SELECT * FROM subjects"
     params = []
     if q:
         clauses = []
@@ -46,7 +46,7 @@ def list_anime(q: str | None = None, limit: int = 40, offset: int = 0):
     else:
         sql += " ORDER BY id DESC LIMIT %s OFFSET %s"
     params.extend([limit, offset])
-    with get_connection() as conn, conn.cursor() as cur:
+    with get_connection(public_database_name()) as conn, conn.cursor() as cur:
         cur.execute(sql, params)
         rows = cur.fetchall()
     collections = _fetch_collections([int(row["id"]) for row in rows])
@@ -54,8 +54,8 @@ def list_anime(q: str | None = None, limit: int = 40, offset: int = 0):
 
 
 def get_anime(subject_id: int):
-    with get_connection() as conn, conn.cursor() as cur:
-        cur.execute("SELECT * FROM subject WHERE id=%s", (subject_id,))
+    with get_connection(public_database_name()) as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM subjects WHERE id=%s", (subject_id,))
         row = cur.fetchone()
     if not row:
         return None
@@ -63,22 +63,22 @@ def get_anime(subject_id: int):
 
 
 def list_episodes(subject_id: int, limit: int = 200):
-    if not table_exists("episode"):
+    if not table_exists("episodes", public_database_name()):
         return []
-    with get_connection() as conn, conn.cursor() as cur:
-        cur.execute("SELECT * FROM episode WHERE subject_id=%s ORDER BY COALESCE(sort, id) LIMIT %s", (subject_id, limit))
+    with get_connection(public_database_name()) as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM episodes WHERE subject_id=%s ORDER BY COALESCE(sort, id) LIMIT %s", (subject_id, limit))
         return cur.fetchall()
 
 
 def list_subject_persons(subject_id: int, limit: int = 80):
-    if not table_exists("subject_person") or not table_exists("person"):
+    if not table_exists("subject_persons", public_database_name()) or not table_exists("persons", public_database_name()):
         return []
-    with get_connection() as conn, conn.cursor() as cur:
+    with get_connection(public_database_name()) as conn, conn.cursor() as cur:
         cur.execute(
             """
             SELECT sp.relation, p.*
-            FROM subject_person sp
-            JOIN person p ON p.id=sp.person_id
+            FROM subject_persons sp
+            JOIN persons p ON p.id=sp.person_id
             WHERE sp.subject_id=%s
             LIMIT %s
             """,
@@ -88,14 +88,14 @@ def list_subject_persons(subject_id: int, limit: int = 80):
 
 
 def list_subject_characters(subject_id: int, limit: int = 80):
-    if not table_exists("subject_character") or not table_exists("character"):
+    if not table_exists("subject_characters", public_database_name()) or not table_exists("characters", public_database_name()):
         return []
-    with get_connection() as conn, conn.cursor() as cur:
+    with get_connection(public_database_name()) as conn, conn.cursor() as cur:
         cur.execute(
             """
             SELECT sc.relation, c.*
-            FROM subject_character sc
-            JOIN `character` c ON c.id=sc.character_id
+            FROM subject_characters sc
+            JOIN characters c ON c.id=sc.character_id
             WHERE sc.subject_id=%s
             LIMIT %s
             """,
@@ -105,13 +105,13 @@ def list_subject_characters(subject_id: int, limit: int = 80):
 
 
 def one_click_collect(subject_id: int):
-    if not table_exists("my_collection"):
-        raise RuntimeError("my_collection table does not exist. Run schema inspection and a safe migration first.")
+    if not table_exists("collections", library_database_name()):
+        raise RuntimeError("collections table does not exist. Run schema inspection and a safe migration first.")
     fmap = _collection_field_map()
     if not fmap.id_field:
-        raise RuntimeError("my_collection needs a subject_id/bangumi_id/anime_id column for collection mapping.")
-    with get_connection() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT * FROM my_collection WHERE `{fmap.id_field}`=%s LIMIT 1", (subject_id,))
+        raise RuntimeError("collections needs a subject_id/bangumi_id/anime_id column for collection mapping.")
+    with get_connection(library_database_name()) as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT * FROM collections WHERE `{fmap.id_field}`=%s LIMIT 1", (subject_id,))
         existing = cur.fetchone()
         assignments = []
         params = []
@@ -123,7 +123,7 @@ def one_click_collect(subject_id: int):
         if existing:
             if assignments:
                 params.append(subject_id)
-                cur.execute(f"UPDATE my_collection SET {', '.join(assignments)} WHERE `{fmap.id_field}`=%s", params)
+                cur.execute(f"UPDATE collections SET {', '.join(assignments)} WHERE `{fmap.id_field}`=%s", params)
             return
         columns = [fmap.id_field]
         values = [subject_id]
@@ -135,17 +135,17 @@ def one_click_collect(subject_id: int):
             values.append(None)
         placeholders = ",".join(["%s"] * len(columns))
         quoted = ",".join(f"`{col}`" for col in columns)
-        cur.execute(f"INSERT INTO my_collection ({quoted}) VALUES ({placeholders})", values)
+        cur.execute(f"INSERT INTO collections ({quoted}) VALUES ({placeholders})", values)
         if fmap.collection_date and fmap.collection_date not in {"created_at"}:
-            cur.execute(f"UPDATE my_collection SET `{fmap.collection_date}`=CURDATE() WHERE `{fmap.id_field}`=%s AND `{fmap.collection_date}` IS NULL", (subject_id,))
+            cur.execute(f"UPDATE collections SET `{fmap.collection_date}`=CURDATE() WHERE `{fmap.id_field}`=%s AND `{fmap.collection_date}` IS NULL", (subject_id,))
 
 
 def save_collection(subject_id: int, form: dict):
-    if not table_exists("my_collection"):
-        raise RuntimeError("my_collection table does not exist. Run schema inspection and a safe migration first.")
+    if not table_exists("collections", library_database_name()):
+        raise RuntimeError("collections table does not exist. Run schema inspection and a safe migration first.")
     fmap = _collection_field_map()
     if not fmap.id_field:
-        raise RuntimeError("my_collection needs a subject_id/bangumi_id/anime_id column for collection mapping.")
+        raise RuntimeError("collections needs a subject_id/bangumi_id/anime_id column for collection mapping.")
     values_by_logical = {
         "collected": form.get("collected") in {"on", "true", "1", "yes"},
         "collection_date": form.get("collection_date") or None,
@@ -154,6 +154,7 @@ def save_collection(subject_id: int, form: dict):
         "source_site": form.get("source_site") or None,
         "my_rating": float(form["my_rating"]) if form.get("my_rating") not in (None, "") else None,
         "notes": form.get("notes") or None,
+        "progress": form.get("progress") or None,
         "extra": json.dumps({"other": form.get("extra")}, ensure_ascii=False) if form.get("extra") else None,
     }
     logical_to_column = {
@@ -164,10 +165,11 @@ def save_collection(subject_id: int, form: dict):
         "source_site": fmap.source_site,
         "my_rating": fmap.my_rating,
         "notes": fmap.notes,
+        "progress": fmap.progress,
         "extra": fmap.extra,
     }
-    with get_connection() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT * FROM my_collection WHERE `{fmap.id_field}`=%s LIMIT 1", (subject_id,))
+    with get_connection(library_database_name()) as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT * FROM collections WHERE `{fmap.id_field}`=%s LIMIT 1", (subject_id,))
         existing = cur.fetchone()
         if existing:
             assignments = []
@@ -178,7 +180,7 @@ def save_collection(subject_id: int, form: dict):
                     params.append(values_by_logical[logical])
             if assignments:
                 params.append(subject_id)
-                cur.execute(f"UPDATE my_collection SET {', '.join(assignments)} WHERE `{fmap.id_field}`=%s", params)
+                cur.execute(f"UPDATE collections SET {', '.join(assignments)} WHERE `{fmap.id_field}`=%s", params)
             return
         columns = [fmap.id_field]
         values = [subject_id]
@@ -188,14 +190,14 @@ def save_collection(subject_id: int, form: dict):
                 values.append(values_by_logical[logical])
         placeholders = ",".join(["%s"] * len(columns))
         quoted = ",".join(f"`{col}`" for col in columns)
-        cur.execute(f"INSERT INTO my_collection ({quoted}) VALUES ({placeholders})", values)
+        cur.execute(f"INSERT INTO collections ({quoted}) VALUES ({placeholders})", values)
 
 
 def iter_covers(missing_only=False, anime_id=None, limit=None):
-    cols = get_table_columns("subject")
+    cols = get_table_columns("subjects", public_database_name())
     if "images" not in cols:
         return []
-    sql = "SELECT id, images FROM subject WHERE images IS NOT NULL"
+    sql = "SELECT id, images FROM subjects WHERE images IS NOT NULL"
     params = []
     if "type" in cols:
         sql += " AND type=2"
@@ -206,7 +208,7 @@ def iter_covers(missing_only=False, anime_id=None, limit=None):
     if limit:
         sql += " LIMIT %s"
         params.append(limit)
-    with get_connection() as conn, conn.cursor() as cur:
+    with get_connection(public_database_name()) as conn, conn.cursor() as cur:
         cur.execute(sql, params)
         rows = cur.fetchall()
     # cover state is file-system based in Archive mode, so missing_only filtering happens in tools/cache_covers.py.

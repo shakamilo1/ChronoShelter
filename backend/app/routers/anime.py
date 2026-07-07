@@ -44,6 +44,7 @@ def save_collection(
     collection_date: str = Form(default=""),
     my_rating: str = Form(default=""),
     notes: str = Form(default=""),
+    progress: str = Form(default=""),
     extra: str = Form(default=""),
 ):
     repositories.save_collection(
@@ -56,6 +57,7 @@ def save_collection(
             "collection_date": collection_date,
             "my_rating": my_rating,
             "notes": notes,
+            "progress": progress,
             "extra": extra,
         },
     )
