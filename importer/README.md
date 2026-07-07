@@ -27,12 +27,10 @@ The importer writes only existing columns and does not create databases or table
 ## Safe Archive update flow
 
 ```bash
-python tools/archive_update.py --download --url <release.zip>
-python tools/archive_update.py --extract
-python tools/archive_update.py --create-temp-db --temp-db chrono_bangumi_tmp
-python importer/import_archive_dump.py --dir data/archive/extracted --dry-run
-python tools/archive_update.py --validate --temp-db chrono_bangumi_tmp
-python tools/archive_update.py --plan-swap --temp-db chrono_bangumi_tmp
+python tools/archive_update.py --file archive.zip
+# or: python tools/archive_update.py --url <release.zip>
+python importer/import_archive_dump.py --dir data/archive/current --dry-run
+python importer/import_archive_dump.py --dir data/archive/current
 ```
 
 The Archive updater never touches `chrono_library.collections`.

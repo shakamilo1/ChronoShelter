@@ -4,110 +4,148 @@ import argparse
 import shutil
 import sys
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "backend"))
+ARCHIVE_ROOT = ROOT / "data" / "archive"
+DOWNLOADS_DIR = ARCHIVE_ROOT / "downloads"
+CURRENT_DIR = ARCHIVE_ROOT / "current"
+CURRENT_TMP_DIR = ARCHIVE_ROOT / "current_tmp"
 
-from app.config import get_settings
-from app.database import get_connection
-
-ARCHIVE_TABLES = [
-    "subjects",
-    "episodes",
-    "persons",
-    "characters",
-    "subject_persons",
-    "subject_characters",
-    "subject_relations",
-    "person_characters",
-    "person_relations",
+REQUIRED_FILES = [
+    "subject.jsonlines",
+    "episode.jsonlines",
+    "person.jsonlines",
+    "character.jsonlines",
+    "subject-persons.jsonlines",
+    "subject-characters.jsonlines",
+    "subject-relations.jsonlines",
+    "person-characters.jsonlines",
+    "person-relations.jsonlines",
 ]
 
 
-def download_release(url: str, dest: Path) -> Path:
-    dest.parent.mkdir(parents=True, exist_ok=True)
+def _safe_member_path(root: Path, member_name: str) -> Path:
+    target = (root / member_name).resolve()
+    root_resolved = root.resolve()
+    if not str(target).startswith(str(root_resolved)):
+        raise ValueError(f"unsafe zip member path: {member_name}")
+    return target
+
+
+def download_release(url: str, downloads_dir: Path = DOWNLOADS_DIR) -> Path:
+    downloads_dir.mkdir(parents=True, exist_ok=True)
+    parsed = urlparse(url)
+    filename = Path(parsed.path).name or f"archive_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.zip"
+    if not filename.endswith(".zip"):
+        filename += ".zip"
+    dest = downloads_dir / filename
     req = Request(url, headers={"User-Agent": "ChronoShelter/1.0"})
     with urlopen(req, timeout=120) as response:  # noqa: S310 - operator-provided release URL
         dest.write_bytes(response.read())
     return dest
 
 
-def extract_zip(zip_path: Path, out_dir: Path) -> Path:
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
-    out_dir.mkdir(parents=True)
+def extract_zip_to_tmp(zip_path: Path, tmp_dir: Path = CURRENT_TMP_DIR) -> Path:
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir)
+    tmp_dir.mkdir(parents=True)
     with zipfile.ZipFile(zip_path) as zf:
-        zf.extractall(out_dir)
-    return out_dir
+        for member in zf.infolist():
+            if member.is_dir():
+                _safe_member_path(tmp_dir, member.filename).mkdir(parents=True, exist_ok=True)
+                continue
+            target = _safe_member_path(tmp_dir, member.filename)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(member) as src, target.open("wb") as dst:
+                shutil.copyfileobj(src, dst)
+    return tmp_dir
 
 
-def create_temp_database(name: str):
-    settings = get_settings()
-    with get_connection("__server__") as conn, conn.cursor() as cur:
-        cur.execute(f"CREATE DATABASE IF NOT EXISTS `{name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
-    print(f"created_temp_database={name}")
+def _find_archive_root(extracted_dir: Path) -> Path:
+    if all((extracted_dir / name).exists() for name in REQUIRED_FILES):
+        return extracted_dir
+    candidates = [path for path in extracted_dir.rglob("subject.jsonlines")]
+    for subject_file in candidates:
+        candidate = subject_file.parent
+        if all((candidate / name).exists() for name in REQUIRED_FILES):
+            return candidate
+    return extracted_dir
 
 
-def validate_temp_database(name: str) -> bool:
-    settings = get_settings()
-    with get_connection("__server__") as conn, conn.cursor() as cur:
-        cur.execute("SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME=%s", (name,))
-        if not cur.fetchone():
-            print(f"validation_failed=temp database {name} missing")
-            return False
-        for table in ARCHIVE_TABLES:
-            cur.execute(
-                "SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s",
-                (name, table),
-            )
-            if cur.fetchone()["cnt"] == 0:
-                print(f"validation_failed=missing table {name}.{table}")
-                return False
-    print("validation_ok=true")
-    return True
+def validate_archive_files(extracted_dir: Path) -> tuple[bool, Path, list[str]]:
+    archive_root = _find_archive_root(extracted_dir)
+    missing = [name for name in REQUIRED_FILES if not (archive_root / name).exists()]
+    return not missing, archive_root, missing
 
 
-def plan_swap(temp_db: str):
-    settings = get_settings()
-    print("Archive swap is intentionally not automatic in MVP.")
-    print(f"validated_temp_db={temp_db}")
-    print(f"public_db={settings.public_db_name}")
-    print(f"library_db={settings.library_db_name}")
-    print("Review the temp database, take a backup, then swap Archive public tables during a maintenance window.")
-    print("collections is in the library database and is not part of ARCHIVE_TABLES and must never be swapped or rebuilt by Archive updates.")
+def activate_current(tmp_dir: Path = CURRENT_TMP_DIR, current_dir: Path = CURRENT_DIR) -> Path:
+    valid, archive_root, missing = validate_archive_files(tmp_dir)
+    if not valid:
+        raise RuntimeError(f"Archive validation failed; missing files: {', '.join(missing)}")
+    backup = None
+    if current_dir.exists():
+        backup = current_dir.with_name(f"current_backup_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}")
+        current_dir.rename(backup)
+    if archive_root == tmp_dir:
+        tmp_dir.rename(current_dir)
+    else:
+        if current_dir.exists():
+            shutil.rmtree(current_dir)
+        shutil.copytree(archive_root, current_dir)
+        shutil.rmtree(tmp_dir)
+    if backup:
+        shutil.rmtree(backup)
+    return current_dir
+
+
+def version_info(zip_path: Path, archive_root: Path) -> dict[str, str | int]:
+    return {
+        "zip": str(zip_path),
+        "archive_dir": str(archive_root),
+        "required_files": len(REQUIRED_FILES),
+        "zip_size": zip_path.stat().st_size if zip_path.exists() else 0,
+    }
+
+
+def prepare_archive(zip_path: Path) -> Path:
+    tmp_dir = extract_zip_to_tmp(zip_path, CURRENT_TMP_DIR)
+    valid, archive_root, missing = validate_archive_files(tmp_dir)
+    if not valid:
+        raise SystemExit(f"missing required Archive files: {', '.join(missing)}")
+    current = activate_current(tmp_dir, CURRENT_DIR)
+    info = version_info(zip_path, current)
+    for key, value in info.items():
+        print(f"{key}={value}")
+    print(f"current={current}")
+    return current
+
+
+def latest_placeholder():
+    print("--latest is reserved for future latest.json support.")
+    print("For now, pass --url <release.zip> or --file archive.zip.")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Download and stage a Bangumi Archive release without overwriting production tables.")
-    parser.add_argument("--url", help="Bangumi Archive release zip URL")
-    parser.add_argument("--zip", type=Path, default=ROOT / "data" / "archive" / "release.zip")
-    parser.add_argument("--extract-dir", type=Path, default=ROOT / "data" / "archive" / "extracted")
-    parser.add_argument("--temp-db", default="chronoshelter_archive_tmp")
-    parser.add_argument("--download", action="store_true")
-    parser.add_argument("--extract", action="store_true")
-    parser.add_argument("--create-temp-db", action="store_true")
-    parser.add_argument("--validate", action="store_true")
-    parser.add_argument("--plan-swap", action="store_true")
+    parser = argparse.ArgumentParser(description="Prepare a Bangumi Archive release zip without importing it into the database.")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--file", type=Path, help="Local Bangumi Archive release zip.")
+    source.add_argument("--url", help="Bangumi Archive release zip URL.")
+    source.add_argument("--latest", action="store_true", help="Reserved for future latest.json release discovery.")
     args = parser.parse_args()
 
-    if args.download:
-        if not args.url:
-            raise SystemExit("--url is required with --download")
-        download_release(args.url, args.zip)
-        print(f"downloaded={args.zip}")
-    if args.extract:
-        extract_zip(args.zip, args.extract_dir)
-        print(f"extracted={args.extract_dir}")
-    if args.create_temp_db:
-        create_temp_database(args.temp_db)
-    if args.validate:
-        if not validate_temp_database(args.temp_db):
-            raise SystemExit(1)
-    if args.plan_swap:
-        plan_swap(args.temp_db)
+    if args.latest:
+        latest_placeholder()
+        return
+    if args.url:
+        zip_path = download_release(args.url)
+        print(f"downloaded={zip_path}")
+    else:
+        zip_path = args.file
+    prepare_archive(zip_path)
 
 
 if __name__ == "__main__":

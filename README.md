@@ -107,15 +107,34 @@ python importer/import_archive_dump.py --dir /path/to/archive-dump
 
 ## Archive 更新工具
 
-`tools/archive_update.py` 是安全 staging 工具，不直接覆盖生产库：
+普通用户不需要手动解压。`tools/archive_update.py` 负责准备本地 Archive 目录，但不负责导入数据库：
 
 ```bash
-python tools/archive_update.py --download --url <bangumi-archive-release.zip-url>
-python tools/archive_update.py --extract
-python tools/archive_update.py --create-temp-db --temp-db chrono_bangumi_tmp
-# 将解压数据导入 chrono_bangumi_tmp 后：
-python tools/archive_update.py --validate --temp-db chrono_bangumi_tmp
-python tools/archive_update.py --plan-swap --temp-db chrono_bangumi_tmp
+# 使用本地 release zip
+python tools/archive_update.py --file archive.zip
+
+# 或下载 release zip 到 data/archive/downloads/ 后自动解压
+python tools/archive_update.py --url <bangumi-archive-release.zip-url>
+
+# 预留：未来可从 latest.json 自动发现最新版
+python tools/archive_update.py --latest
+```
+
+自动流程：
+
+```text
+release zip / release URL
+  -> data/archive/downloads/
+  -> data/archive/current_tmp/
+  -> 检查 required jsonlines
+  -> rename/copy 为 data/archive/current/
+```
+
+验证成功后再导入：
+
+```bash
+python importer/import_archive_dump.py --dir data/archive/current --dry-run
+python importer/import_archive_dump.py --dir data/archive/current
 ```
 
 ## 网站查询逻辑
