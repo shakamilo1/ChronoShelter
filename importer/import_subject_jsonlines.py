@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "backend"))
 
 from importer.bangumi_data_sync import DATA_FILE, load_entries
+from app.schema_utils import get_table_columns
 from importer.image_cache import cache_cover
 from importer.merge_engine import merge_subjects
 
@@ -102,6 +103,54 @@ ON DUPLICATE KEY UPDATE
  updated_at=CURRENT_TIMESTAMP
 """
 
+OPTIONAL_MIGRATION_HINTS = {
+    "cover_local_path": "sql/migrations/001_add_sync_columns.sql or 002_safe_my_collection_and_cover_cache.sql",
+    "cover_cache_status": "sql/migrations/002_safe_my_collection_and_cover_cache.sql",
+    "cover_cached_at": "sql/migrations/002_safe_my_collection_and_cover_cache.sql",
+    "broadcast": "sql/migrations/001_add_sync_columns.sql or 002_safe_my_collection_and_cover_cache.sql",
+    "sites_json": "sql/migrations/002_safe_my_collection_and_cover_cache.sql",
+    "tags_json": "sql/schema.sql migration for JSON tag storage",
+    "meta_tags_json": "sql/schema.sql migration for JSON meta tag storage",
+    "infobox_json": "sql/schema.sql migration for JSON infobox storage",
+    "raw_infobox": "sql/schema.sql migration for raw infobox storage",
+}
+
+
+def build_upsert_sql(row: dict, existing_columns: set[str], safe_mode: bool = False) -> tuple[str, dict]:
+    if "id" not in existing_columns:
+        raise RuntimeError("bangumi_anime.id column is required before importing.")
+    writable = [key for key, value in row.items() if key in existing_columns]
+    missing = [key for key in row if key not in existing_columns and key in OPTIONAL_MIGRATION_HINTS]
+    for key in missing:
+        print(f"warning: bangumi_anime.{key} missing; 需要执行 migration {OPTIONAL_MIGRATION_HINTS[key]}", file=sys.stderr)
+    quoted = [f"`{col}`" if col == "rank" else col for col in writable]
+    values = [f"%({col})s" for col in writable]
+    updates = []
+    for col in writable:
+        if col == "id":
+            continue
+        q = f"`{col}`" if col == "rank" else col
+        if safe_mode:
+            if col in {"nsfw"}:
+                updates.append(f"{q}={q}")
+            elif col.endswith("_json"):
+                updates.append(f"{q}=COALESCE({q}, VALUES({q}))")
+            elif col in {"platform", "air_date", "air_year", "air_month", "eps", "rating_score", "rating_count", "rank", "cover_cached_at"}:
+                updates.append(f"{q}=COALESCE({q}, VALUES({q}))")
+            else:
+                updates.append(f"{q}=COALESCE(NULLIF({q}, ''), NULLIF(VALUES({q}), ''))")
+        else:
+            if col in {"platform", "air_date", "air_year", "air_month", "eps", "rating_score", "rating_count", "rank", "cover_cached_at"}:
+                updates.append(f"{q}=COALESCE(VALUES({q}), {q})")
+            elif col.endswith("_json"):
+                updates.append(f"{q}=COALESCE(VALUES({q}), {q})")
+            else:
+                updates.append(f"{q}=COALESCE(NULLIF(VALUES({q}), ''), {q})")
+    if "updated_at" in existing_columns:
+        updates.append("updated_at=CURRENT_TIMESTAMP")
+    sql = f"INSERT INTO bangumi_anime ({', '.join(quoted)}) VALUES ({', '.join(values)}) ON DUPLICATE KEY UPDATE {', '.join(updates)}"
+    return sql, {key: row[key] for key in writable}
+
 def normalize_subject(subject: dict, bangumi_data_entry: dict | None = None, cache_images: bool = False) -> dict:
     model = merge_subjects(subject, bangumi_data_entry)
     cover_local_path = None
@@ -160,6 +209,7 @@ def import_file(path, limit=None, dry_run=False, only_id=None, safe_mode=False, 
     iterable = iter_subjects(path, limit=limit, only_id=only_id)
     if tqdm:
         iterable = tqdm(iterable, unit="line")
+    existing_columns = get_table_columns("bangumi_anime") if not dry_run else set()
     if dry_run:
         conn_ctx = None
     else:
@@ -176,8 +226,9 @@ def import_file(path, limit=None, dry_run=False, only_id=None, safe_mode=False, 
                 if dry_run:
                     imported += 1
                     continue
+                sql, params = build_upsert_sql(row, existing_columns, safe_mode=safe_mode)
                 with conn.cursor() as cur:
-                    cur.execute(SAFE_UPSERT_SQL if safe_mode else UPSERT_SQL, row)
+                    cur.execute(sql, params)
                 imported += 1
             except Exception as exc:  # noqa: BLE001
                 errors += 1

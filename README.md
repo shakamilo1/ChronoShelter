@@ -65,6 +65,25 @@ CHRONOSHELTER_DB_PASSWORD=change-me
 CHRONOSHELTER_DB_NAME=chronoshelter
 ```
 
+
+## 接入已有数据库
+
+不要假设 MariaDB 是全新结构。推荐流程：
+
+```bash
+python tools/inspect_schema.py
+mkdir -p backups
+mysqldump --single-transaction -u root -p chronoshelter bangumi_anime my_collection > backups/chronoshelter_before_migration.sql
+mysql -u root -p chronoshelter < sql/migrations/001_add_sync_columns.sql
+mysql -u root -p chronoshelter < sql/migrations/002_safe_my_collection_and_cover_cache.sql
+uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8700
+python tools/cache_covers.py --missing --limit 100
+```
+
+`tools/inspect_schema.py` 是只读工具，会输出 `bangumi_anime` 和 `my_collection` 的字段列表与行数。当前程序期望字段、旧字段兼容关系和 migration 优先级见 `docs/current_schema.md`。
+
+`my_collection` 通过 `backend/app/collection_mapper.py` 做字段映射，兼容 `collection_date/collect_date/created_at/date`、`notes/note/remark`、`my_rating/rating`、`collected/is_collected` 等旧字段名。
+
 ## 初始化或安全迁移数据库
 
 首次初始化：
@@ -74,16 +93,17 @@ mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS chronoshelter CHARACTER SET u
 mysql -u root -p chronoshelter < sql/schema.sql
 ```
 
-已有旧库时必须先备份，再迁移：
+已有旧库时必须先 inspect，再备份，再迁移：
 
 ```bash
+python tools/inspect_schema.py
 mkdir -p backups
 mysqldump --single-transaction -u root -p chronoshelter bangumi_anime my_collection > backups/chronoshelter_before_migration.sql
 mysql -u root -p chronoshelter < sql/migrations/001_add_sync_columns.sql
 mysql -u root -p chronoshelter < sql/migrations/002_safe_my_collection_and_cover_cache.sql
 ```
 
-迁移原则：不 `DROP my_collection`，不 `TRUNCATE my_collection`，不清空收藏数据，不覆盖已有收藏备注和个人评分；如果要回滚，先停止 Web，再用 `backups/chronoshelter_before_migration.sql` 恢复。
+迁移原则：不 `DROP my_collection`，不 `TRUNCATE my_collection`，不重建已有 `my_collection`，不改变原字段含义，不清空收藏数据，不覆盖已有收藏备注和个人评分；已有表只通过 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 添加可空字段。如果要回滚，先停止 Web，再用 `backups/chronoshelter_before_migration.sql` 恢复。
 
 ## NAS 部署
 
