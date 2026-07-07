@@ -1,0 +1,6 @@
+-- ChronoShelter no longer ships executable schema creation for production.
+-- Public data lives in database chrono_bangumi using Bangumi Archive tables:
+-- subjects, episodes, persons, characters, subject_persons, subject_characters,
+-- subject_relations, person_characters, person_relations.
+-- Personal data lives in database chrono_library.collections.
+-- See README.md for migration SQL draft. Do not execute this file as an initializer.

@@ -1,13 +1,155 @@
 # ChronoShelter
 
+ChronoShelter 当前数据层拆分为两个 MariaDB 数据库：
 
-<img src="https://github.com/shakamilo1/ChronoShelter/blob/main/logo.png" width="300">
-Chrono：来自 希腊语，源词 χρόνος (khrónos)，意为“时间”。
+1. `chrono_bangumi`：公共 Bangumi Archive 数据，可定期完全重建。
+2. `chrono_library`：用户个人收藏，永久保存，不随 Archive 更新。
 
-Shelter：庇护所，象征你为动画记忆打造的安全港湾。
+本 PR 只修改代码架构，不执行数据库修改，不提供可直接执行的建库 SQL。
 
-🔮 所以 ChronoShelter = 时间的庇护所，也就是：
+## 公共数据库：chrono_bangumi
 
-用来收藏、守护这些“时间留下的动画记忆”的地方。
+不要继续使用 `bangumi_anime`，也不要设计 `anime` 表。公共数据按照 Bangumi Archive 原始实体模型读取：
 
-它是一个私人动画档案馆的项目。
+```text
+subjects
+episodes
+persons
+characters
+subject_persons
+subject_characters
+subject_relations
+person_characters
+person_relations
+```
+
+## 用户数据库：chrono_library
+
+原 `my_collection` 迁移目标为 `collections`，只保存用户信息：
+
+- `subject_id`
+- 收藏状态
+- 收藏日期
+- 媒介类型
+- 字幕组
+- 来源网站
+- 我的评分
+- 备注
+- 观看进度
+- 扩展 JSON
+
+收藏功能只写 `chrono_library.collections`。
+
+## 新数据流
+
+```text
+chrono_bangumi.subjects(type=2)
+  └─ 海报墙 / 搜索
+
+chrono_bangumi.subjects
+  + episodes
+  + persons via subject_persons
+  + characters via subject_characters
+  + chrono_library.collections
+  └─ 动画详情页
+
+一键收藏 / 编辑收藏
+  └─ 只 INSERT/UPDATE chrono_library.collections
+
+Archive 更新
+  └─ 下载 release zip -> 解压 -> 导入临时公共库 -> 验证 -> 人工计划替换 chrono_bangumi 公共表
+     不直接覆盖生产库，不触碰 chrono_library.collections
+```
+
+## 配置
+
+```bash
+cp .env.example .env
+```
+
+```dotenv
+CHRONOSHELTER_DB_HOST=host.docker.internal
+CHRONOSHELTER_DB_PORT=3306
+CHRONOSHELTER_DB_USER=chronoshelter
+CHRONOSHELTER_DB_PASSWORD=change-me
+CHRONOSHELTER_PUBLIC_DB_NAME=chrono_bangumi
+CHRONOSHELTER_LIBRARY_DB_NAME=chrono_library
+```
+
+## 接入已有数据库
+
+只读检查：
+
+```bash
+python tools/inspect_schema.py
+```
+
+备份个人库：
+
+```bash
+mkdir -p backups
+mysqldump --single-transaction -u root -p chrono_library collections > backups/collections_before_change.sql
+```
+
+然后再根据下面的 migration SQL 草稿人工评估，不要在未确认字段结构前执行。
+
+## Archive 更新工具
+
+`tools/archive_update.py` 是安全 staging 工具，不直接覆盖生产库：
+
+```bash
+python tools/archive_update.py --download --url <bangumi-archive-release.zip-url>
+python tools/archive_update.py --extract
+python tools/archive_update.py --create-temp-db --temp-db chrono_bangumi_tmp
+# 将解压数据导入 chrono_bangumi_tmp 后：
+python tools/archive_update.py --validate --temp-db chrono_bangumi_tmp
+python tools/archive_update.py --plan-swap --temp-db chrono_bangumi_tmp
+```
+
+## 网站查询逻辑
+
+- 海报墙：`subjects(type=2)`。
+- 详情页：`subjects + episodes + persons + characters + collections`。
+- 一键收藏：只写 `collections`。
+- 编辑收藏：只写 `collections`。
+
+## 启动
+
+```bash
+uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8700
+```
+
+Docker / NAS：
+
+```bash
+mkdir -p media/covers data/archive
+cp .env.example .env
+docker compose up -d --build
+```
+
+## Migration SQL 草稿（不要直接执行）
+
+下面仅是人工迁移参考，必须先 `inspect_schema.py` 和备份。
+
+```sql
+-- chrono_library: create database manually if needed
+-- CREATE DATABASE chrono_library CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- If migrating from my_collection, copy data manually after checking columns.
+-- CREATE TABLE chrono_library.collections LIKE old_db.my_collection;
+-- INSERT INTO chrono_library.collections SELECT * FROM old_db.my_collection;
+
+-- Add only nullable columns after confirming they do not already exist:
+-- ALTER TABLE chrono_library.collections ADD COLUMN subject_id BIGINT NULL;
+-- ALTER TABLE chrono_library.collections ADD COLUMN collected BOOLEAN NULL;
+-- ALTER TABLE chrono_library.collections ADD COLUMN collection_date DATE NULL;
+-- ALTER TABLE chrono_library.collections ADD COLUMN media_type VARCHAR(128) NULL;
+-- ALTER TABLE chrono_library.collections ADD COLUMN subtitle_group VARCHAR(255) NULL;
+-- ALTER TABLE chrono_library.collections ADD COLUMN source_site VARCHAR(255) NULL;
+-- ALTER TABLE chrono_library.collections ADD COLUMN my_rating FLOAT NULL;
+-- ALTER TABLE chrono_library.collections ADD COLUMN notes TEXT NULL;
+-- ALTER TABLE chrono_library.collections ADD COLUMN progress VARCHAR(128) NULL;
+-- ALTER TABLE chrono_library.collections ADD COLUMN extra_json JSON NULL;
+```
+
+公共库 `chrono_bangumi` 应由 Bangumi Archive 导入到临时库并验证后替换，不能在 Web 运行时直接覆盖生产库。

@@ -1,0 +1,2 @@
+-- No-op placeholder. bangumi_anime is deprecated and must not be created.
+-- This PR does not provide executable migration SQL.

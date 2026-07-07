@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.env
+/data/bangumi_data.json
+/data/bangumi_data.*.tmp
+/data/backups/
+/media/covers/
+*.db
+.DS_Store
+/logs/

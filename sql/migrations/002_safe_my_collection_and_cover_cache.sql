@@ -1,0 +1,2 @@
+-- No-op placeholder. This PR only changes application architecture.
+-- Review README.md "Migration SQL 草稿" and run hand-approved SQL after inspect/backup.
