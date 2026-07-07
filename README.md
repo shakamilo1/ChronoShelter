@@ -103,7 +103,7 @@ python importer/import_archive_dump.py --dir /path/to/archive-dump --table subje
 python importer/import_archive_dump.py --dir /path/to/archive-dump
 ```
 
-支持的文件名包括 `subject.jsonlines`、`episode.jsonlines`、`person.jsonlines`、`character.jsonlines`、`subject_person.jsonlines`、`subject_character.jsonlines`、`subject_relation.jsonlines`、`person_relation.jsonlines`、`person_character.jsonlines`。
+支持的文件名包括 `subject.jsonlines`、`episode.jsonlines`、`person.jsonlines`、`character.jsonlines`、`subject-persons.jsonlines`、`subject-characters.jsonlines`、`subject-relations.jsonlines`、`person-characters.jsonlines`、`person-relations.jsonlines`。
 
 ## Archive 更新工具
 

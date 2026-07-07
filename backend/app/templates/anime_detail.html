@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ anime.name_cn or anime.name_jp or anime.name }} - ChronoShelter{% endblock %}
 {% block content %}
-{% set cover = '/' ~ anime.cover_local_path if anime.cover_local_path else '/static/placeholder.svg' %}
+{% set cover = '/' ~ anime.cover_local_path if anime.cover_local_path else (anime.image_large or '/static/placeholder.svg') %}
 <section class="detail">
   <img class="cover" src="{{ cover }}" alt="cover">
   <div>

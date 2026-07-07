@@ -16,11 +16,11 @@ Expected files:
 - `episode.jsonlines` -> `episodes`
 - `person.jsonlines` -> `persons`
 - `character.jsonlines` -> `characters`
-- `subject_person.jsonlines` -> `subject_persons`
-- `subject_character.jsonlines` -> `subject_characters`
-- `subject_relation.jsonlines` -> `subject_relations`
-- `person_relation.jsonlines` -> `person_relations`
-- `person_character.jsonlines` -> `person_characters`
+- `subject-persons.jsonlines` -> `subject_persons`
+- `subject-characters.jsonlines` -> `subject_characters`
+- `subject-relations.jsonlines` -> `subject_relations`
+- `person-relations.jsonlines` -> `person_relations`
+- `person-characters.jsonlines` -> `person_characters`
 
 The importer writes only existing columns and does not create databases or tables.
 

@@ -20,11 +20,11 @@ ARCHIVE_FILES = {
     "episodes": "episode.jsonlines",
     "persons": "person.jsonlines",
     "characters": "character.jsonlines",
-    "subject_persons": "subject_person.jsonlines",
-    "subject_characters": "subject_character.jsonlines",
-    "subject_relations": "subject_relation.jsonlines",
-    "person_relations": "person_relation.jsonlines",
-    "person_characters": "person_character.jsonlines",
+    "subject_persons": "subject-persons.jsonlines",
+    "subject_characters": "subject-characters.jsonlines",
+    "subject_relations": "subject-relations.jsonlines",
+    "person_characters": "person-characters.jsonlines",
+    "person_relations": "person-relations.jsonlines",
 }
 
 

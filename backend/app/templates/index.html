@@ -7,7 +7,7 @@
 </form>
 <div class="grid poster-wall">
 {% for item in anime %}
-  {% set cover = '/' ~ item.cover_local_path if item.cover_local_path else '/static/placeholder.svg' %}
+  {% set cover = '/' ~ item.cover_local_path if item.cover_local_path else (item.image_large or '/static/placeholder.svg') %}
   <article class="card">
     <a href="/anime/{{ item.id }}">
       <img src="{{ cover }}" alt="{{ item.name_cn or item.name_jp or item.name }}">
