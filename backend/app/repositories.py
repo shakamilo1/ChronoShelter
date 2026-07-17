@@ -76,7 +76,7 @@ def list_subject_persons(subject_id: int, limit: int = 80):
     with get_connection(public_database_name()) as conn, conn.cursor() as cur:
         cur.execute(
             """
-            SELECT sp.relation, p.*
+            SELECT sp.position AS relation, p.*
             FROM subject_persons sp
             JOIN persons p ON p.id=sp.person_id
             WHERE sp.subject_id=%s
@@ -93,7 +93,7 @@ def list_subject_characters(subject_id: int, limit: int = 80):
     with get_connection(public_database_name()) as conn, conn.cursor() as cur:
         cur.execute(
             """
-            SELECT sc.relation, c.*
+            SELECT sc.type AS relation, c.*
             FROM subject_characters sc
             JOIN characters c ON c.id=sc.character_id
             WHERE sc.subject_id=%s

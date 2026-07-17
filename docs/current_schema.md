@@ -51,3 +51,23 @@ python tools/inspect_schema.py
 ```
 
 The tool reads both configured databases and prints Archive table and `collections` columns/row counts. It does not modify data.
+
+## SQL initialization drafts
+
+Database landing SQL is intentionally split into reviewable files under `sql/`:
+
+- `sql/create_chrono_bangumi_tables.sql`: creates the new `chrono_bangumi` public Archive cache database and Archive-aligned tables.
+- `sql/create_chrono_library_tables.sql`: creates/extends the `chrono_library` personal tables (`collections` plus optional `cover_cache`) without any Bangumi public fields in `collections`.
+- `sql/create_indexes.sql`: creates recommended lookup indexes for poster-wall, detail-page, importer, and cover-cache workflows.
+
+These SQL files are generated for manual review/execution only. They must not be run by the application automatically, and they never reference the legacy `chrono_shelter` database.
+
+## Importer compatibility check
+
+`importer/import_archive_dump.py` imports only columns that exist in the destination table. The generated `chrono_bangumi` SQL uses Archive field names directly, so current Archive keys from the nine jsonlines files match the writable columns:
+
+- `subjects`: `id`, `type`, `name`, `name_cn`, `infobox`, `platform`, `summary`, `tags`, `meta_tags`, `score`, `score_details`, `rank`, `favorite`, `date`, `nsfw`, `series`
+- `episodes`: `id`, `name`, `name_cn`, `description`, `airdate`, `disc`, `duration`, `subject_id`, `sort`, `type`
+- `persons`: `id`, `name`, `type`, `career`, `infobox`, `summary`, `comments`, `collects`
+- `characters`: `id`, `role`, `name`, `infobox`, `summary`, `comments`, `collects`
+- relation tables: Archive relation keys are preserved (`subject_id`, `person_id`, `character_id`, `related_subject_id`, `related_person_id`, `relation_type`, `position`, `appear_eps`, `order`, `summary`, `person_type`, `spoiler`, `ended`).

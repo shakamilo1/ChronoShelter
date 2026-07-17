@@ -5,7 +5,7 @@ ChronoShelter 当前数据层拆分为两个 MariaDB 数据库：
 1. `chrono_bangumi`：公共 Bangumi Archive 数据，可定期完全重建。
 2. `chrono_library`：用户个人收藏，永久保存，不随 Archive 更新。
 
-本 PR 只修改代码架构，不执行数据库修改，不提供可直接执行的建库 SQL。
+本 PR 只生成可人工审阅的数据库初始化 SQL 文件；不会连接 MariaDB、不会执行 SQL、不会修改旧 `chrono_shelter`。
 
 ## 公共数据库：chrono_bangumi
 
@@ -91,7 +91,7 @@ mkdir -p backups
 mysqldump --single-transaction -u root -p chrono_library collections > backups/collections_before_change.sql
 ```
 
-然后再根据下面的 migration SQL 草稿人工评估，不要在未确认字段结构前执行。
+然后再根据 `sql/` 下的初始化 SQL 和下面的 migration SQL 草稿人工评估，不要在未确认字段结构前执行。
 
 ## Archive dump 导入器
 
@@ -171,6 +171,16 @@ mkdir -p media/covers data/archive
 cp .env.example .env
 docker compose up -d --build
 ```
+
+## 数据库初始化 SQL（只生成，不自动执行）
+
+本仓库现在提供三个手动执行用 SQL 文件：
+
+- `sql/create_chrono_bangumi_tables.sql`：创建 `chrono_bangumi` 及 Archive 对应的 `subjects`、`episodes`、`persons`、`characters` 和关系表。
+- `sql/create_chrono_library_tables.sql`：创建/补齐 `chrono_library.collections` 和可选 `cover_cache`；`collections` 只保存个人收藏字段，不包含 `name`、`summary`、`tags`、`image`、`infobox` 等公共字段。
+- `sql/create_indexes.sql`：为海报墙、搜索、详情页关联查询、封面缓存状态查询创建推荐索引。
+
+这些 SQL 文件不会被应用自动执行；旧库 `chrono_shelter`、旧表 `bangumi_anime`、旧表 `my_collection` 都不会被本 PR 修改。
 
 ## Migration SQL 草稿（不要直接执行）
 
