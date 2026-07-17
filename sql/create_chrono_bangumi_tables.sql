@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS `subjects` (
   `name` VARCHAR(512) NULL,
   `name_cn` VARCHAR(512) NULL,
   `infobox` MEDIUMTEXT NULL COMMENT 'Archive Subject.infobox raw wiki string',
-  `platform` VARCHAR(128) NULL,
+  `platform` SMALLINT UNSIGNED NULL COMMENT 'Archive Subject.platform',
   `summary` MEDIUMTEXT NULL,
   `nsfw` BOOLEAN NULL,
   `date` VARCHAR(32) NULL,
@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS `characters` (
 
 CREATE TABLE IF NOT EXISTS `subject_relations` (
   `subject_id` INT UNSIGNED NOT NULL,
-  `relation_type` VARCHAR(64) NOT NULL,
+  `relation_type` SMALLINT UNSIGNED NOT NULL,
   `related_subject_id` INT UNSIGNED NOT NULL,
   `order` SMALLINT UNSIGNED NOT NULL DEFAULT 0,
   PRIMARY KEY (`subject_id`, `relation_type`, `related_subject_id`, `order`)
@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS `subject_characters` (
 CREATE TABLE IF NOT EXISTS `subject_persons` (
   `person_id` INT UNSIGNED NOT NULL,
   `subject_id` INT UNSIGNED NOT NULL,
-  `position` VARCHAR(128) NOT NULL,
+  `position` SMALLINT UNSIGNED NOT NULL COMMENT 'Archive SubjectPerson.position',
   `appear_eps` JSON NULL COMMENT 'Archive SubjectPerson.appear_eps, exported from 2025-09-29',
   PRIMARY KEY (`subject_id`, `person_id`, `position`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

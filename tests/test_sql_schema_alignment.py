@@ -49,8 +49,21 @@ def test_table_sql_does_not_create_or_select_databases():
 def test_archive_small_unsigned_types_are_preserved():
     sql = Path("sql/create_chrono_bangumi_tables.sql").read_text()
     assert "`type` TINYINT UNSIGNED" in sql
+    assert "`platform` SMALLINT UNSIGNED" in sql
     assert "`role` TINYINT UNSIGNED" in sql
     assert "`disc` SMALLINT UNSIGNED" in sql
     assert "`order` SMALLINT UNSIGNED" in sql
+    assert "`position` SMALLINT UNSIGNED" in sql
+    assert "`relation_type` SMALLINT UNSIGNED" in sql
     assert "`comments` INT UNSIGNED" in sql
     assert "`collects` INT UNSIGNED" in sql
+
+
+def test_required_query_indexes_exist():
+    sql = Path("sql/create_indexes.sql").read_text()
+    assert "`idx_subjects_type_name_name_cn`" in sql
+    assert "ON `subjects` (`type`, `name`, `name_cn`)" in sql
+    assert "`idx_episodes_subject_id`" in sql
+    assert "`idx_subject_relations_subject_related`" in sql
+    assert "`idx_person_characters_subject_character`" in sql
+    assert "`idx_person_relations_person_related`" in sql

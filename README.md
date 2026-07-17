@@ -176,9 +176,9 @@ docker compose up -d --build
 
 本仓库现在提供三个手动执行用 SQL 文件：
 
-- `sql/create_chrono_bangumi_tables.sql`：仅包含 `CREATE TABLE`，用于已手动选择的 `chrono_bangumi`，字段按官方 Bangumi Archive README 模型校正。
+- `sql/create_chrono_bangumi_tables.sql`：仅包含 `CREATE TABLE`，用于已手动选择的 `chrono_bangumi`，字段按官方 Bangumi Archive README 模型校正（含 `platform`、`position`、关系类型等 small unsigned enum 字段）。
 - `sql/create_chrono_library_tables.sql`：仅包含 `CREATE TABLE`，用于已手动选择的 `chrono_library.collections` 和可选 `cover_cache`；`collections` 只保存个人收藏字段，不包含 `name`、`summary`、`tags`、`image`、`infobox` 等公共字段。
-- `sql/create_indexes.sql`：为海报墙、搜索、详情页关联查询、封面缓存状态查询创建推荐索引。
+- `sql/create_indexes.sql`：为海报墙、`subjects(type,name,name_cn)` 搜索、`episodes(subject_id)`、relations 相关 id、详情页关联查询和封面缓存状态查询创建推荐索引。
 
 这些 SQL 文件不会被应用自动执行；表结构 SQL 已删除 `CREATE DATABASE` / `USE`，需要你手动选择目标库后执行；旧库 `chrono_shelter`、旧表 `bangumi_anime`、旧表 `my_collection` 都不会被本 PR 修改。
 
