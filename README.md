@@ -5,7 +5,7 @@ ChronoShelter 当前数据层拆分为两个 MariaDB 数据库：
 1. `chrono_bangumi`：公共 Bangumi Archive 数据，可定期完全重建。
 2. `chrono_library`：用户个人收藏，永久保存，不随 Archive 更新。
 
-本 PR 只生成可人工审阅的数据库初始化 SQL 文件；不会连接 MariaDB、不会执行 SQL、不会修改旧 `chrono_shelter`。
+本 PR 只生成可人工审阅的 `CREATE TABLE` / 索引 SQL 文件；不会连接 MariaDB、不会执行 SQL、不会创建数据库、不会修改旧 `chrono_shelter`。
 
 ## 公共数据库：chrono_bangumi
 
@@ -176,26 +176,23 @@ docker compose up -d --build
 
 本仓库现在提供三个手动执行用 SQL 文件：
 
-- `sql/create_chrono_bangumi_tables.sql`：创建 `chrono_bangumi` 及 Archive 对应的 `subjects`、`episodes`、`persons`、`characters` 和关系表。
-- `sql/create_chrono_library_tables.sql`：创建/补齐 `chrono_library.collections` 和可选 `cover_cache`；`collections` 只保存个人收藏字段，不包含 `name`、`summary`、`tags`、`image`、`infobox` 等公共字段。
+- `sql/create_chrono_bangumi_tables.sql`：仅包含 `CREATE TABLE`，用于已手动选择的 `chrono_bangumi`，字段按官方 Bangumi Archive README 模型校正。
+- `sql/create_chrono_library_tables.sql`：仅包含 `CREATE TABLE`，用于已手动选择的 `chrono_library.collections` 和可选 `cover_cache`；`collections` 只保存个人收藏字段，不包含 `name`、`summary`、`tags`、`image`、`infobox` 等公共字段。
 - `sql/create_indexes.sql`：为海报墙、搜索、详情页关联查询、封面缓存状态查询创建推荐索引。
 
-这些 SQL 文件不会被应用自动执行；旧库 `chrono_shelter`、旧表 `bangumi_anime`、旧表 `my_collection` 都不会被本 PR 修改。
+这些 SQL 文件不会被应用自动执行；表结构 SQL 已删除 `CREATE DATABASE` / `USE`，需要你手动选择目标库后执行；旧库 `chrono_shelter`、旧表 `bangumi_anime`、旧表 `my_collection` 都不会被本 PR 修改。
 
 ## Migration SQL 草稿（不要直接执行）
 
 下面仅是人工迁移参考，必须先 `inspect_schema.py` 和备份。
 
 ```sql
--- chrono_library: create database manually if needed
--- CREATE DATABASE chrono_library CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-
 -- If migrating from my_collection, copy data manually after checking columns.
 -- CREATE TABLE chrono_library.collections LIKE old_db.my_collection;
 -- INSERT INTO chrono_library.collections SELECT * FROM old_db.my_collection;
 
 -- Add only nullable columns after confirming they do not already exist:
--- ALTER TABLE chrono_library.collections ADD COLUMN subject_id BIGINT NULL;
+-- ALTER TABLE chrono_library.collections ADD COLUMN subject_id INT UNSIGNED NULL;
 -- ALTER TABLE chrono_library.collections ADD COLUMN collected BOOLEAN NULL;
 -- ALTER TABLE chrono_library.collections ADD COLUMN collection_date DATE NULL;
 -- ALTER TABLE chrono_library.collections ADD COLUMN media_type VARCHAR(128) NULL;
@@ -208,13 +205,13 @@ docker compose up -d --build
 
 -- Optional cover cache status table (manual draft):
 -- CREATE TABLE chrono_library.cover_cache (
---   subject_id BIGINT PRIMARY KEY,
+--   subject_id INT UNSIGNED PRIMARY KEY,
 --   status VARCHAR(32) NULL,
 --   local_path TEXT NULL,
 --   error TEXT NULL,
 --   http_status INT NULL,
 --   content_type VARCHAR(255) NULL,
---   file_size BIGINT NULL,
+--   file_size INT UNSIGNED NULL,
 --   width INT NULL,
 --   height INT NULL,
 --   updated_at DATETIME NULL

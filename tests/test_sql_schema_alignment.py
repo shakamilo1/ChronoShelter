@@ -37,3 +37,20 @@ def test_collections_table_does_not_store_public_bangumi_fields():
     assert match, "missing collections table"
     collection_columns = set(re.findall(r"^\s+`([^`]+)`", match.group(1), re.M))
     assert {"name", "name_cn", "summary", "tags", "image", "infobox"}.isdisjoint(collection_columns)
+
+
+def test_table_sql_does_not_create_or_select_databases():
+    for path in (Path("sql/create_chrono_bangumi_tables.sql"), Path("sql/create_chrono_library_tables.sql")):
+        sql = path.read_text().upper()
+        assert "CREATE DATABASE `" not in sql
+        assert "USE `" not in sql
+
+
+def test_archive_small_unsigned_types_are_preserved():
+    sql = Path("sql/create_chrono_bangumi_tables.sql").read_text()
+    assert "`type` TINYINT UNSIGNED" in sql
+    assert "`role` TINYINT UNSIGNED" in sql
+    assert "`disc` SMALLINT UNSIGNED" in sql
+    assert "`order` SMALLINT UNSIGNED" in sql
+    assert "`comments` INT UNSIGNED" in sql
+    assert "`collects` INT UNSIGNED" in sql

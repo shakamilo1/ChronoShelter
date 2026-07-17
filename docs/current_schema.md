@@ -56,11 +56,11 @@ The tool reads both configured databases and prints Archive table and `collectio
 
 Database landing SQL is intentionally split into reviewable files under `sql/`:
 
-- `sql/create_chrono_bangumi_tables.sql`: creates the new `chrono_bangumi` public Archive cache database and Archive-aligned tables.
-- `sql/create_chrono_library_tables.sql`: creates/extends the `chrono_library` personal tables (`collections` plus optional `cover_cache`) without any Bangumi public fields in `collections`.
+- `sql/create_chrono_bangumi_tables.sql`: contains `CREATE TABLE` statements for the manually selected `chrono_bangumi` public Archive cache database, with field names and small unsigned integer widths aligned to the official Bangumi Archive README model.
+- `sql/create_chrono_library_tables.sql`: contains `CREATE TABLE` statements for the manually selected `chrono_library` personal tables (`collections` plus optional `cover_cache`) without any Bangumi public fields in `collections`.
 - `sql/create_indexes.sql`: creates recommended lookup indexes for poster-wall, detail-page, importer, and cover-cache workflows.
 
-These SQL files are generated for manual review/execution only. They must not be run by the application automatically, and they never reference the legacy `chrono_shelter` database.
+These SQL files are generated for manual review/execution only. They must not be run by the application automatically, contain no `CREATE DATABASE` statements, and never reference the legacy `chrono_shelter` database.
 
 ## Importer compatibility check
 

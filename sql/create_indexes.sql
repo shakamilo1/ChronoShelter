@@ -1,8 +1,7 @@
 -- ChronoShelter recommended indexes for chrono_bangumi and chrono_library.
--- Review and execute manually after creating/importing tables. This file does not touch chrono_shelter.
+-- Select the target database manually before executing each section. This file does not create databases or touch chrono_shelter.
 
-USE `chrono_bangumi`;
-
+-- Run after selecting chrono_bangumi:
 CREATE INDEX IF NOT EXISTS `idx_subjects_type` ON `subjects` (`type`);
 CREATE INDEX IF NOT EXISTS `idx_subjects_name` ON `subjects` (`name`);
 CREATE INDEX IF NOT EXISTS `idx_subjects_name_cn` ON `subjects` (`name_cn`);
@@ -35,8 +34,7 @@ CREATE INDEX IF NOT EXISTS `idx_person_relations_person` ON `person_relations` (
 CREATE INDEX IF NOT EXISTS `idx_person_relations_related_person_id` ON `person_relations` (`related_person_id`);
 CREATE INDEX IF NOT EXISTS `idx_person_relations_relation_type` ON `person_relations` (`relation_type`);
 
-USE `chrono_library`;
-
+-- Run after selecting chrono_library:
 CREATE INDEX IF NOT EXISTS `idx_collections_collected` ON `collections` (`collected`);
 CREATE INDEX IF NOT EXISTS `idx_collections_collection_date` ON `collections` (`collection_date`);
 CREATE INDEX IF NOT EXISTS `idx_cover_cache_status` ON `cover_cache` (`status`);
