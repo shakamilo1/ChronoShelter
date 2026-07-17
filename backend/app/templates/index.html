@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}海报墙 - ChronoShelter{% endblock %}
+{% block content %}
+<form class="search" action="/" method="get">
+  <input name="q" value="{{ q }}" placeholder="搜索中文名 / 日文名 / 英文名">
+  <button type="submit">搜索</button>
+</form>
+<div class="grid poster-wall">
+{% for item in anime %}
+  {% set cover = '/' ~ item.cover_local_path if item.cover_local_path else (item.image_large or '/static/placeholder.svg') %}
+  <article class="card">
+    <a href="/anime/{{ item.id }}">
+      <img src="{{ cover }}" alt="{{ item.name_cn or item.name_jp or item.name }}">
+      <h2>{{ item.name_cn or item.name_jp or item.name }}</h2>
+    </a>
+    <p class="muted">{{ item.name_jp or item.name }}</p>
+    <p>放送：{{ item.air_date or item.date or '未定' }}</p>
+    <p>集数：{{ item.eps if item.eps else '未定' }}</p>
+    <p>{% if item.rating_score and item.rating_count %}⭐ {{ item.rating_score }} ({{ item.rating_count }}){% else %}暂无评分{% endif %}</p>
+    <div class="collect-row">
+      {% if item.collected %}
+        <span class="collected">已收藏</span>
+      {% else %}
+        <form action="/anime/{{ item.id }}/collect" method="post"><button type="submit">一键收藏</button></form>
+      {% endif %}
+    </div>
+    <div class="tags">{% for tag in item.tags[:5] %}<span>{{ tag.name }}</span>{% endfor %}</div>
+  </article>
+{% else %}<p>暂无数据，请先导入 Bangumi Archive subjects。</p>{% endfor %}
+</div>
+{% endblock %}
