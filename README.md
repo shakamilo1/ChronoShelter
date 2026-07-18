@@ -172,3 +172,70 @@ FastAPI 运行入口已经废弃并从当前应用结构移除：
 - `docker-compose.yml`
 
 这些不再是 ChronoShelter 的部署方式。
+
+## 登录与安全
+
+ChronoShelter 是私人 NAS 应用，默认启用单用户登录。未登录访问以下页面会自动跳转到 `login.php`：
+
+- `index.php`
+- `subject.php`
+- `collection.php`
+- `collection_edit.php`
+- `admin.php`
+
+认证配置位于 `config/config.php`：
+
+```php
+'auth' => [
+    'enabled' => true,
+    'username' => 'admin',
+    'password_hash' => '这里填写密码哈希',
+],
+```
+
+密码不要明文保存。生成密码哈希：
+
+```bash
+php -r "echo password_hash('你的密码', PASSWORD_DEFAULT);"
+```
+
+然后将输出填入 `password_hash`。也可以通过环境变量覆盖：
+
+```bash
+CHRONOSHELTER_AUTH_USERNAME=admin
+CHRONOSHELTER_AUTH_PASSWORD_HASH='password_hash 输出值'
+```
+
+登录使用 PHP Session。登录成功后会调用 `session_regenerate_id(true)` 更新 Session ID，以降低 session fixation 风险。所有 POST 表单都带有 CSRF Token；校验失败会返回 HTTP 403 并拒绝请求。
+
+## 封面批量下载工具
+
+网页浏览时仍会尝试少量补齐缺失封面；大批量下载请使用离线 Python 工具：
+
+```bash
+python tools/download_covers.py --missing
+```
+
+限制数量：
+
+```bash
+python tools/download_covers.py --missing --limit 500
+```
+
+降低下载速度、避免给 Bangumi API 造成压力：
+
+```bash
+python tools/download_covers.py --missing --delay 10
+```
+
+默认延迟为 3 秒。工具查询 `chrono_bangumi.subjects(type=2)`，跳过已有 `chrono_library.cover_cache` 记录或本地已有 `covers/{subject_id}.jpg` 的条目，将封面保存到 `covers/`。运行时可按 `Ctrl+C` 安全停止；已经成功下载的图片会保留，下次运行会自动跳过并继续。失败日志写入：
+
+```text
+logs/cover_download.log
+```
+
+该工具需要 PyMySQL：
+
+```bash
+python -m pip install PyMySQL
+```

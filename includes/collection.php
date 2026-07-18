@@ -30,7 +30,7 @@ function save_collection(array $data): void
     db_library()->prepare($sql)->execute($data);
 }
 
-function list_collections(): array
+function list_collections(int $limit = 50, int $offset = 0): array
 {
     $publicDb = db_identifier(public_database_name());
     $sql = 'SELECT c.*, s.name, s.name_cn, s.date, s.score, cc.local_path AS cover_local_path
@@ -38,6 +38,10 @@ function list_collections(): array
             JOIN ' . $publicDb . '.subjects s ON s.id = c.subject_id
             LEFT JOIN cover_cache cc ON cc.subject_id = c.subject_id AND cc.status = \'cached\'
             WHERE c.collected = TRUE AND s.type = 2
-            ORDER BY c.collection_date DESC, c.updated_at DESC';
-    return db_library()->query($sql)->fetchAll();
+            ORDER BY c.collection_date DESC, c.updated_at DESC LIMIT :limit OFFSET :offset';
+    $stmt = db_library()->prepare($sql);
+    $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+    $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+    $stmt->execute();
+    return $stmt->fetchAll();
 }

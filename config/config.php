@@ -12,6 +12,11 @@ return [
         'library_database' => getenv('CHRONOSHELTER_LIBRARY_DB_NAME') ?: 'chrono_library',
         'charset' => 'utf8mb4',
     ],
+    'auth' => [
+        'enabled' => true,
+        'username' => getenv('CHRONOSHELTER_AUTH_USERNAME') ?: 'admin',
+        'password_hash' => getenv('CHRONOSHELTER_AUTH_PASSWORD_HASH') ?: '$2y$10$replace.this.with.password_hash.output',
+    ],
     'covers' => [
         'directory' => dirname(__DIR__) . '/covers',
         'public_path' => 'covers',

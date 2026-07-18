@@ -1,9 +1,41 @@
 <?php
+
 declare(strict_types=1);
-require_once __DIR__ . '/includes/bangumi.php'; require_once __DIR__ . '/includes/collection.php';
-$id=(int)($_GET['id']??$_POST['subject_id']??0); $subject=get_subject($id); if(!$subject){http_response_code(404); exit('Subject not found');}
-if($_SERVER['REQUEST_METHOD']==='POST'){ save_collection(['subject_id'=>$id,'collected'=>isset($_POST['collected'])?1:0,'collection_date'=>$_POST['collection_date']?:null,'media_type'=>$_POST['media_type']?:null,'subtitle_group'=>$_POST['subtitle_group']?:null,'source_site'=>$_POST['source_site']?:null,'my_rating'=>$_POST['my_rating']?:null,'notes'=>$_POST['notes']?:null,'watch_progress'=>$_POST['watch_progress']?:null]); header('Location: subject.php?id='.$id); exit; }
-$c=get_collection($id) ?? []; $title='编辑收藏'; require __DIR__.'/templates/header.php';
+
+require_once __DIR__ . '/includes/auth.php';
+require_once __DIR__ . '/includes/csrf.php';
+require_once __DIR__ . '/includes/bangumi.php';
+require_once __DIR__ . '/includes/collection.php';
+
+require_login();
+
+$id = (int) ($_GET['id'] ?? $_POST['subject_id'] ?? 0);
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    verify_csrf();
+}
+$subject = get_subject($id);
+if (!$subject) {
+    http_response_code(404);
+    exit('Subject not found');
+}
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    save_collection([
+        'subject_id' => $id,
+        'collected' => isset($_POST['collected']) ? 1 : 0,
+        'collection_date' => $_POST['collection_date'] ?: null,
+        'media_type' => $_POST['media_type'] ?: null,
+        'subtitle_group' => $_POST['subtitle_group'] ?: null,
+        'source_site' => $_POST['source_site'] ?: null,
+        'my_rating' => $_POST['my_rating'] ?: null,
+        'notes' => $_POST['notes'] ?: null,
+        'watch_progress' => $_POST['watch_progress'] ?: null,
+    ]);
+    header('Location: subject.php?id=' . $id);
+    exit;
+}
+$c = get_collection($id) ?? [];
+$title = '编辑收藏';
+require __DIR__ . '/templates/header.php';
 ?>
-<h1>编辑收藏：<?= h($subject['name_cn'] ?: $subject['name']) ?></h1><form method="post" class="form"><input type="hidden" name="subject_id" value="<?= $id ?>"><label><input type="checkbox" name="collected" <?= (($c['collected'] ?? true) ? 'checked' : '') ?>> 是否收藏</label><label>收藏日期 <input type="date" name="collection_date" value="<?= h($c['collection_date'] ?? date('Y-m-d')) ?>"></label><label>媒体类型 <input name="media_type" value="<?= h($c['media_type'] ?? '') ?>"></label><label>字幕组 <input name="subtitle_group" value="<?= h($c['subtitle_group'] ?? '') ?>"></label><label>来源网站 <input name="source_site" value="<?= h($c['source_site'] ?? '') ?>"></label><label>我的评分 <input type="number" min="1" max="10" name="my_rating" value="<?= h($c['my_rating'] ?? '') ?>"></label><label>观看进度 <input name="watch_progress" value="<?= h($c['watch_progress'] ?? '') ?>"></label><label>备注 <textarea name="notes"><?= h($c['notes'] ?? '') ?></textarea></label><button>保存并返回</button></form>
-<?php require __DIR__.'/templates/footer.php'; ?>
+<h1>编辑收藏：<?= h($subject['name_cn'] ?: $subject['name']) ?></h1><form method="post" class="form"><?= csrf_field() ?><input type="hidden" name="subject_id" value="<?= $id ?>"><label><input type="checkbox" name="collected" <?= (($c['collected'] ?? true) ? 'checked' : '') ?>> 是否收藏</label><label>收藏日期 <input type="date" name="collection_date" value="<?= h($c['collection_date'] ?? date('Y-m-d')) ?>"></label><label>媒体类型 <input name="media_type" value="<?= h($c['media_type'] ?? '') ?>"></label><label>字幕组 <input name="subtitle_group" value="<?= h($c['subtitle_group'] ?? '') ?>"></label><label>来源网站 <input name="source_site" value="<?= h($c['source_site'] ?? '') ?>"></label><label>我的评分 <input type="number" min="1" max="10" name="my_rating" value="<?= h($c['my_rating'] ?? '') ?>"></label><label>观看进度 <input name="watch_progress" value="<?= h($c['watch_progress'] ?? '') ?>"></label><label>备注 <textarea name="notes"><?= h($c['notes'] ?? '') ?></textarea></label><button>保存并返回</button></form>
+<?php require __DIR__ . '/templates/footer.php'; ?>

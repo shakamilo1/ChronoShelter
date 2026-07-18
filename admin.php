@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
+require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/database.php';
+require_login();
 function count_table(PDO $db,string $table): int { return (int)$db->query('SELECT COUNT(*) FROM `'.$table.'`')->fetchColumn(); }
 $title='管理'; $stats=['subjects'=>count_table(db_public(),'subjects'),'episodes'=>count_table(db_public(),'episodes'),'collections'=>count_table(db_library(),'collections')]; require __DIR__.'/templates/header.php';
 ?>
