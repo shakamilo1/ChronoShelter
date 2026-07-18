@@ -21,6 +21,11 @@ function list_anime(int $limit = 60, int $offset = 0): array
     return $stmt->fetchAll();
 }
 
+function count_anime(): int
+{
+    return (int) db_public()->query('SELECT COUNT(*) FROM subjects WHERE type = 2')->fetchColumn();
+}
+
 function get_subject(int $id): ?array
 {
     $stmt = db_public()->prepare('SELECT * FROM subjects WHERE id = :id AND type = 2');

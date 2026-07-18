@@ -41,7 +41,7 @@ function login_user(string $username, string $password): bool
     $auth = app_config()['auth'] ?? [];
     $expectedUser = (string) ($auth['username'] ?? 'admin');
     $passwordHash = (string) ($auth['password_hash'] ?? '');
-    if (!hash_equals($expectedUser, $username) || $passwordHash === '' || !password_verify($password, $passwordHash)) {
+    if ($expectedUser !== $username || $passwordHash === '' || !password_verify($password, $passwordHash)) {
         return false;
     }
     session_regenerate_id(true);

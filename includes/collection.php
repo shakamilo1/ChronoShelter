@@ -30,6 +30,13 @@ function save_collection(array $data): void
     db_library()->prepare($sql)->execute($data);
 }
 
+function count_collections(): int
+{
+    $publicDb = db_identifier(public_database_name());
+    $sql = 'SELECT COUNT(*) FROM collections c JOIN ' . $publicDb . '.subjects s ON s.id = c.subject_id WHERE c.collected = TRUE AND s.type = 2';
+    return (int) db_library()->query($sql)->fetchColumn();
+}
+
 function list_collections(int $limit = 50, int $offset = 0): array
 {
     $publicDb = db_identifier(public_database_name());

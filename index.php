@@ -19,6 +19,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'colle
 
 $page = max(1, (int) ($_GET['page'] ?? 1));
 $perPage = 50;
+$totalItems = count_anime();
+$totalPages = max(1, (int) ceil($totalItems / $perPage));
+$page = min($page, $totalPages);
 $items = list_anime($perPage, ($page - 1) * $perPage);
 $title = '首页海报墙';
 require __DIR__ . '/templates/header.php';
@@ -39,5 +42,5 @@ require __DIR__ . '/templates/header.php';
     </article>
 <?php endforeach; ?>
 </div>
-<nav class="pager"><?php if ($page > 1): ?><a href="index.php?page=<?= $page - 1 ?>">上一页</a><?php endif; ?><span>第 <?= $page ?> 页</span><?php if (count($items) === $perPage): ?><a href="index.php?page=<?= $page + 1 ?>">下一页</a><?php endif; ?></nav>
+<nav class="pager"><?php if ($page > 1): ?><a href="index.php?page=<?= $page - 1 ?>">&lt; 上一页</a><?php endif; ?><span>第 <?= $page ?> / <?= $totalPages ?> 页</span><?php if ($page < $totalPages): ?><a href="index.php?page=<?= $page + 1 ?>">下一页 &gt;</a><?php endif; ?></nav>
 <?php require __DIR__ . '/templates/footer.php'; ?>

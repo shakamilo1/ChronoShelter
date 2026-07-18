@@ -51,17 +51,20 @@ def connect_db(database: str):
     try:
         import pymysql  # type: ignore
     except ImportError as exc:  # pragma: no cover - depends on local operator env
-        raise SystemExit("请先安装 PyMySQL：python -m pip install PyMySQL") from exc
-    return pymysql.connect(
-        host=os.getenv("CHRONOSHELTER_DB_HOST", "127.0.0.1"),
-        port=int(os.getenv("CHRONOSHELTER_DB_PORT", "3306")),
-        user=os.getenv("CHRONOSHELTER_DB_USER", "chronoshelter"),
-        password=os.getenv("CHRONOSHELTER_DB_PASSWORD", "change-me"),
-        database=database,
-        charset="utf8mb4",
-        cursorclass=pymysql.cursors.DictCursor,
-        autocommit=True,
-    )
+        raise SystemExit("请先安装依赖：python -m pip install PyMySQL Pillow") from exc
+    try:
+        return pymysql.connect(
+            host=os.getenv("CHRONOSHELTER_DB_HOST", "127.0.0.1"),
+            port=int(os.getenv("CHRONOSHELTER_DB_PORT", "3306")),
+            user=os.getenv("CHRONOSHELTER_DB_USER", "chronoshelter"),
+            password=os.getenv("CHRONOSHELTER_DB_PASSWORD", "change-me"),
+            database=database,
+            charset="utf8mb4",
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=True,
+        )
+    except pymysql.MySQLError as exc:
+        raise SystemExit(f"无法连接 MariaDB 数据库 {database}: {exc}") from exc
 
 
 def local_cover_path(subject_id: int) -> Path:
@@ -90,12 +93,13 @@ def missing_subject_ids(limit: int | None = None) -> list[int]:
 def detect_image(path: Path) -> tuple[int, int] | None:
     try:
         from PIL import Image  # type: ignore
-    except ImportError:
-        return (1, 1) if path.stat().st_size >= MIN_BYTES else None
+    except ImportError as exc:  # pragma: no cover - depends on local operator env
+        raise SystemExit("请先安装 Pillow 用于验证图片完整性：python -m pip install Pillow") from exc
     try:
         with Image.open(path) as image:
+            size = image.size
             image.verify()
-            return image.size
+            return size
     except Exception:  # pragma: no cover - depends on corrupt image bytes
         return None
 
@@ -155,11 +159,14 @@ def download_cover(subject_id: int, timeout: int = 10) -> DownloadResult:
     with tempfile.NamedTemporaryFile(delete=False, dir=COVERS_DIR, suffix=".tmp") as fh:
         tmp_path = Path(fh.name)
         fh.write(data)
-    size = detect_image(tmp_path)
-    if not size:
-        tmp_path.unlink(missing_ok=True)
-        return DownloadResult(ok=False, status="failed", error="invalid image", content_type=content_type, file_size=len(data))
-    tmp_path.replace(target)
+    try:
+        size = detect_image(tmp_path)
+        if not size:
+            return DownloadResult(ok=False, status="failed", error="invalid image", content_type=content_type, file_size=len(data))
+        tmp_path.replace(target)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
     return DownloadResult(ok=True, status="cached", content_type=content_type, file_size=len(data), width=size[0], height=size[1])
 
 

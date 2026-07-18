@@ -234,8 +234,13 @@ python tools/download_covers.py --missing --delay 10
 logs/cover_download.log
 ```
 
-该工具需要 PyMySQL：
+该工具需要 PyMySQL 和 Pillow：
 
 ```bash
-python -m pip install PyMySQL
+python -m pip install PyMySQL Pillow
 ```
+
+其中：
+
+- PyMySQL 用于连接 MariaDB。
+- Pillow 用于验证图片完整性。
