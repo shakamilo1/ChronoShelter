@@ -14,7 +14,7 @@ require_login();
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'collect') {
     verify_csrf();
     add_collection((int) $_POST['subject_id']);
-    header('Location: index.php?page=' . max(1, (int) ($_GET['page'] ?? 1)));
+    header('Location: ./?page=' . max(1, (int) ($_GET['page'] ?? 1)));
     exit;
 }
 
@@ -47,5 +47,5 @@ require __DIR__ . '/templates/header.php';
     </article>
 <?php endforeach; ?>
 </div>
-<nav class="pager"><?php if ($page > 1): ?><a href="index.php?page=<?= $page - 1 ?>">&lt; 上一页</a><?php endif; ?><span>第 <?= $page ?> / <?= $totalPages ?> 页</span><?php if ($page < $totalPages): ?><a href="index.php?page=<?= $page + 1 ?>">下一页 &gt;</a><?php endif; ?></nav>
+<nav class="pager"><?php if ($page > 1): ?><a href="./?page=<?= $page - 1 ?>">&lt; 上一页</a><?php endif; ?><span>第 <?= $page ?> / <?= $totalPages ?> 页</span><?php if ($page < $totalPages): ?><a href="./?page=<?= $page + 1 ?>">下一页 &gt;</a><?php endif; ?></nav>
 <?php require __DIR__ . '/templates/footer.php'; ?>
