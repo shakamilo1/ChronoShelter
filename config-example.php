@@ -18,7 +18,7 @@ return [
         'password_hash' => getenv('CHRONOSHELTER_AUTH_PASSWORD_HASH') ?: '$2y$10$replace.this.with.password_hash.output',
     ],
     'covers' => [
-        'directory' => dirname(__DIR__) . '/covers',
+        'directory' => __DIR__ . '/covers',
         'public_path' => 'covers',
         'api_url' => 'https://api.bgm.tv/v0/subjects/%d/image?type=large',
         'no_icon_url' => 'https://lain.bgm.tv/img/no_icon_subject.png',

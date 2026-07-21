@@ -32,6 +32,17 @@
 /Web/ChronoShelter/covers
 ```
 
+项目根目录就是 `ChronoShelter/`。所有 Python 工具、SQL 和测试都从这个目录运行；不要把仓库 clone 成 `ChronoShelter/ChronoShelter/`。
+
+首次部署复制示例配置，本地真实配置不要提交 Git：
+
+```bash
+cd /Web/ChronoShelter
+cp config-example.php config.php
+```
+
+唯一测试目录是项目根目录下的 `tests/`，`pytest.ini` 也位于项目根目录。请从 `ChronoShelter/` 运行 `pytest`，避免重复 clone 到子目录导致 `import file mismatch`。
+
 ## 3. 创建数据库
 
 使用 phpMyAdmin 或 MariaDB CLI 创建两个数据库：
@@ -65,8 +76,8 @@ mysql -u root -p chrono_library < sql/create_chrono_library_indexes.sql
 导入表结构后，`chrono_bangumi` 仍然是空的。Bangumi Archive 数据需要离线导入：
 
 ```bash
-python importer/import_archive_dump.py --dir data/archive/current --dry-run
-python importer/import_archive_dump.py --dir data/archive/current
+python importer/import_archive_dump.py --dir data/archive/processed --dry-run
+python importer/import_archive_dump.py --dir data/archive/processed
 ```
 
 ## 5. 创建数据库用户
@@ -89,12 +100,12 @@ FLUSH PRIVILEGES;
 
 如果 MariaDB 与 Web 服务在同一台机器，也可以把 `'%'` 改成 `'localhost'`。
 
-## 6. 修改 `config/config.php`
+## 6. 修改 `config.php`
 
 编辑：
 
 ```text
-/Web/ChronoShelter/config/config.php
+/Web/ChronoShelter/config.php
 ```
 
 填入 MariaDB 主机、端口、用户名、密码和数据库名。示例：
@@ -119,7 +130,7 @@ FLUSH PRIVILEGES;
 php -r "echo password_hash('your-admin-password', PASSWORD_DEFAULT);"
 ```
 
-将输出填入 `config/config.php`：
+将输出填入 `config.php`：
 
 ```php
 'auth' => [
@@ -130,6 +141,8 @@ php -r "echo password_hash('your-admin-password', PASSWORD_DEFAULT);"
 ```
 
 不要把明文密码写入配置文件。
+
+`config.php` 已被 `.gitignore` 忽略；仓库只提交 `config-example.php`。以后执行 `git pull` 不会覆盖你的本地真实配置。新增示例配置时使用 `文件名-example.扩展名` 命名，例如 `.env-example`、`local_config-example.py`。
 
 ## 8. 部署检查
 
@@ -158,7 +171,20 @@ Schema    OK
 4. 首页应正常显示；如果 `chrono_bangumi` 尚未导入数据，页面可以为空，但不应出现 PHP Fatal Error。
 5. 访问 `admin.php` 查看表数量。
 
-## 10. 封面批量下载
+## 10. 数据目录规范
+
+大量 Archive jsonlines 不要放项目根目录，统一使用：
+
+```text
+data/
+├── archive/
+│   ├── incoming/      # archive.zip 等原始下载文件
+│   ├── extracted/     # 解压临时目录
+│   └── processed/     # 验证通过、供 importer 导入的数据
+└── logs/              # 离线工具日志
+```
+
+## 11. 封面批量下载
 
 安装离线工具依赖：
 
@@ -178,7 +204,7 @@ python tools/download_covers.py --missing --limit 500 --delay 3
 logs/cover_download.log
 ```
 
-## 11. 索引兼容性说明
+## 12. 索引兼容性说明
 
 `subjects.name` 与 `subjects.name_cn` 是 `VARCHAR(512)` 且使用 `utf8mb4`。为了兼容 InnoDB 单索引键长度限制，联合索引 `idx_subjects_type_name_name_cn` 使用前缀索引：
 

@@ -42,7 +42,7 @@ Recommended logical fields:
 - `progress` / `watch_progress` / `watched_eps`
 - `extra_json` / `extra` / `other`
 
-The application uses `backend/app/collection_mapper.py` to map old field names to these logical fields.
+The PHP collection layer writes the canonical `chrono_library.collections` fields directly; legacy field-name mapping is no longer part of the web runtime.
 
 ## Inspection
 

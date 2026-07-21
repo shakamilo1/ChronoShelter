@@ -3,11 +3,33 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+
+# Local user configuration. Commit only *-example.* files.
+/config.php
 .env
-/data/bangumi_data.json
-/data/bangumi_data.*.tmp
-/data/backups/
+/local_config.py
+/database.yml
+*.local.*
+/config/config.php
+
+# Runtime data and generated files.
+/data/archive/incoming/*
+/data/archive/extracted/*
+/data/archive/processed/*
+/data/logs/*
+/logs/
 /media/covers/
+/covers/*.jpg
+/covers/*.jpeg
+/covers/*.png
+/covers/*.webp
+
+# Keep directory markers.
+!/data/archive/incoming/.gitkeep
+!/data/archive/extracted/.gitkeep
+!/data/archive/processed/.gitkeep
+!/data/logs/.gitkeep
+!/covers/.gitkeep
+
 *.db
 .DS_Store
-/logs/

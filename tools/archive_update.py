@@ -11,9 +11,9 @@ from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 ARCHIVE_ROOT = ROOT / "data" / "archive"
-DOWNLOADS_DIR = ARCHIVE_ROOT / "downloads"
-CURRENT_DIR = ARCHIVE_ROOT / "current"
-CURRENT_TMP_DIR = ARCHIVE_ROOT / "current_tmp"
+INCOMING_DIR = ARCHIVE_ROOT / "incoming"
+EXTRACTED_DIR = ARCHIVE_ROOT / "extracted"
+PROCESSED_DIR = ARCHIVE_ROOT / "processed"
 
 REQUIRED_FILES = [
     "subject.jsonlines",
@@ -36,7 +36,7 @@ def _safe_member_path(root: Path, member_name: str) -> Path:
     return target
 
 
-def download_release(url: str, downloads_dir: Path = DOWNLOADS_DIR) -> Path:
+def download_release(url: str, downloads_dir: Path = INCOMING_DIR) -> Path:
     downloads_dir.mkdir(parents=True, exist_ok=True)
     parsed = urlparse(url)
     filename = Path(parsed.path).name or f"archive_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.zip"
@@ -49,7 +49,7 @@ def download_release(url: str, downloads_dir: Path = DOWNLOADS_DIR) -> Path:
     return dest
 
 
-def extract_zip_to_tmp(zip_path: Path, tmp_dir: Path = CURRENT_TMP_DIR) -> Path:
+def extract_zip_to_tmp(zip_path: Path, tmp_dir: Path = EXTRACTED_DIR) -> Path:
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir)
     tmp_dir.mkdir(parents=True)
@@ -82,13 +82,13 @@ def validate_archive_files(extracted_dir: Path) -> tuple[bool, Path, list[str]]:
     return not missing, archive_root, missing
 
 
-def activate_current(tmp_dir: Path = CURRENT_TMP_DIR, current_dir: Path = CURRENT_DIR) -> Path:
+def activate_current(tmp_dir: Path = EXTRACTED_DIR, current_dir: Path = PROCESSED_DIR) -> Path:
     valid, archive_root, missing = validate_archive_files(tmp_dir)
     if not valid:
         raise RuntimeError(f"Archive validation failed; missing files: {', '.join(missing)}")
     backup = None
     if current_dir.exists():
-        backup = current_dir.with_name(f"current_backup_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}")
+        backup = current_dir.with_name(f"processed_backup_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}")
         current_dir.rename(backup)
     if archive_root == tmp_dir:
         tmp_dir.rename(current_dir)
@@ -112,15 +112,15 @@ def version_info(zip_path: Path, archive_root: Path) -> dict[str, str | int]:
 
 
 def prepare_archive(zip_path: Path) -> Path:
-    tmp_dir = extract_zip_to_tmp(zip_path, CURRENT_TMP_DIR)
+    tmp_dir = extract_zip_to_tmp(zip_path, EXTRACTED_DIR)
     valid, archive_root, missing = validate_archive_files(tmp_dir)
     if not valid:
         raise SystemExit(f"missing required Archive files: {', '.join(missing)}")
-    current = activate_current(tmp_dir, CURRENT_DIR)
+    current = activate_current(tmp_dir, PROCESSED_DIR)
     info = version_info(zip_path, current)
     for key, value in info.items():
         print(f"{key}={value}")
-    print(f"current={current}")
+    print(f"processed={current}")
     return current
 
 
