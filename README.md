@@ -12,7 +12,8 @@ ChronoShelter/
 ├── collection_edit.php    # 收藏编辑页
 ├── admin.php              # 管理页面
 ├── config/
-│   └── config.php         # PHP 与 Python 共享的唯一配置文件
+│   ├── config-example.php # 唯一示例配置文件
+│   └── config.php         # 用户本地配置；不提交 Git
 ├── includes/
 │   ├── database.php       # PDO 工厂与 HTML 转义
 │   ├── bangumi.php        # chrono_bangumi 查询
@@ -41,6 +42,7 @@ ChronoShelter/
 ```bash
 git clone <repo-url> ChronoShelter
 cd ChronoShelter
+cp config/config-example.php config/config.php
 # 编辑 config/config.php
 ```
 
@@ -131,7 +133,7 @@ FLUSH PRIVILEGES;
 
 ## 数据库连接配置方法
 
-`config/config.php` 是 PHP 与 Python importer 共享的唯一配置来源，也可以通过环境变量覆盖：
+首次部署先复制 `config/config-example.php` 为 `config/config.php`；PHP 与 Python importer 共享这个本地 `config/config.php`，也可以通过环境变量覆盖：
 
 ```bash
 CHRONOSHELTER_DB_HOST=127.0.0.1
@@ -147,7 +149,7 @@ CHRONOSHELTER_LIBRARY_DB_NAME=chrono_library
 - 对 `chrono_bangumi` 有读取权限。
 - 对 `chrono_library.collections` 和 `chrono_library.cover_cache` 有读取、插入、更新权限。
 
-不要新增 `db_config.py`、`database_config.py` 等第二套数据库密码配置；Python importer 会读取同一份 `config/config.php`。如需增加其他类型示例配置，使用 `文件名-example.扩展名` 命名。
+`config/config.php` 不提交 Git；仓库只保留 `config/config-example.php` 作为唯一示例配置。不要新增 `db_config.py`、`database_config.py` 等第二套数据库密码配置；Python importer 会读取同一份本地 `config/config.php`。
 
 ## 页面功能
 

@@ -7,12 +7,20 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config" / "config.php"
+EXAMPLE_CONFIG_PATH = ROOT / "config" / "config-example.php"
 
 
 def read_php_config(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
-    """Read the shared PHP config/config.php without duplicating DB secrets."""
+    """Read shared PHP config without duplicating DB secrets.
+
+    Production deployments should copy config/config-example.php to
+    config/config.php. Tests and fresh clones can read the example file.
+    """
     if not config_path.exists():
-        raise FileNotFoundError(f"Missing PHP config: {config_path}")
+        if config_path == CONFIG_PATH and EXAMPLE_CONFIG_PATH.exists():
+            config_path = EXAMPLE_CONFIG_PATH
+        else:
+            raise FileNotFoundError(f"Missing PHP config: {config_path}")
     php_code = (
         "$config = require " + repr(str(config_path)) + "; "
         "echo json_encode($config, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);"

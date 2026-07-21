@@ -4,12 +4,14 @@ __pycache__/
 .venv/
 venv/
 
-# Local environment overrides; database config stays in config/config.php.
+# Local user configuration. Commit only config/config-example.php.
+/config/config.php
 .env
 /local_config.py
 /database.yml
 *.local.*
 # Runtime data and generated files.
+/data/archive/*.jsonlines
 /data/archive/incoming/*
 /data/archive/extracted/*
 /data/archive/processed/*

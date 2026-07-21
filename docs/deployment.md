@@ -38,6 +38,7 @@
 
 ```bash
 cd /Web/ChronoShelter
+cp config/config-example.php config/config.php
 # 编辑 config/config.php
 ```
 
@@ -142,7 +143,7 @@ php -r "echo password_hash('your-admin-password', PASSWORD_DEFAULT);"
 
 不要把明文密码写入配置文件。
 
-`config/config.php` 是唯一数据库配置来源，PHP 网站和 Python importer 共用它。不要新增 `db_config.py`、`database_config.py` 等第二套密码配置。新增其他示例配置时使用 `文件名-example.扩展名` 命名，例如 `.env-example`、`local_config-example.py`。
+首次部署请复制 `config/config-example.php` 为 `config/config.php`。`config/config.php` 不提交 Git；仓库只保留 `config/config-example.php` 作为唯一示例配置。PHP 网站和 Python importer 共用本地 `config/config.php`，不要新增 `db_config.py`、`database_config.py` 等第二套密码配置。
 
 ## 8. 部署检查
 
