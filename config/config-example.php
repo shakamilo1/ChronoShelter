@@ -20,6 +20,7 @@ return [
     'covers' => [
         'directory' => dirname(__DIR__) . '/covers',
         'public_path' => 'covers',
-        'placeholder' => 'logo.png',
+        'subjects_directory' => 'subjects',
+        'fallback' => 'logo.png',
     ],
 ];
