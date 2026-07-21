@@ -44,7 +44,24 @@ cp config/config-example.php config/config.php
 
 唯一测试目录是项目根目录下的 `tests/`，`pytest.ini` 也位于项目根目录。请从 `ChronoShelter/` 运行 `pytest`，避免重复 clone 到子目录导致 `import file mismatch`。
 
-## 3. 创建数据库
+
+## 3. 从旧版本升级前后
+
+升级旧版本前，先备份本地配置：
+
+```bash
+cp config/config.php config/config.php.bak
+```
+
+升级后，如果 `config/config.php` 不存在，就从示例配置创建：
+
+```bash
+cp config/config-example.php config/config.php
+```
+
+然后把备份中的 MariaDB 连接、数据库名、管理员用户名和 `password_hash` 合并回新的 `config/config.php`。
+
+## 4. 创建数据库
 
 使用 phpMyAdmin 或 MariaDB CLI 创建两个数据库：
 
@@ -58,7 +75,7 @@ CREATE DATABASE IF NOT EXISTS chrono_library CHARACTER SET utf8mb4 COLLATE utf8m
 - `chrono_bangumi`：公共 Bangumi Archive 数据，只读。
 - `chrono_library`：私人收藏与封面缓存，网站读写。
 
-## 4. 导入数据库结构
+## 5. 导入数据库结构
 
 SQL 文件只包含表结构、索引和必要约束，不包含用户数据、私人收藏或大量动画数据。脚本使用 `CREATE TABLE IF NOT EXISTS`，可以重复执行用于补齐缺失表。
 
@@ -81,7 +98,7 @@ python importer/import_archive_dump.py --dir data/archive/processed --dry-run
 python importer/import_archive_dump.py --dir data/archive/processed
 ```
 
-## 5. 创建数据库用户
+## 6. 创建数据库用户
 
 不要使用 MariaDB `root` 或 NAS 管理员账号运行网站。建议创建单独用户：
 
@@ -101,7 +118,7 @@ FLUSH PRIVILEGES;
 
 如果 MariaDB 与 Web 服务在同一台机器，也可以把 `'%'` 改成 `'localhost'`。
 
-## 6. 修改 `config/config.php`
+## 7. 修改 `config/config.php`
 
 编辑：
 
@@ -123,7 +140,7 @@ FLUSH PRIVILEGES;
 ],
 ```
 
-## 7. 创建管理员密码
+## 8. 创建管理员密码
 
 生成密码哈希：
 
@@ -145,7 +162,7 @@ php -r "echo password_hash('your-admin-password', PASSWORD_DEFAULT);"
 
 首次部署请复制 `config/config-example.php` 为 `config/config.php`。`config/config.php` 不提交 Git；仓库只保留 `config/config-example.php` 作为唯一示例配置。PHP 网站和 Python importer 共用本地 `config/config.php`，不要新增 `db_config.py`、`database_config.py` 等第二套密码配置。
 
-## 8. 部署检查
+## 9. 部署检查
 
 访问：
 
@@ -164,7 +181,7 @@ Schema    OK
 
 部署完成后建议删除或限制访问 `install_check.php`。
 
-## 9. 测试访问
+## 10. 测试访问
 
 1. 打开站点首页。
 2. 未登录时应跳转到 `login.php`。
@@ -172,7 +189,7 @@ Schema    OK
 4. 首页应正常显示；如果 `chrono_bangumi` 尚未导入数据，页面可以为空，但不应出现 PHP Fatal Error。
 5. 访问 `admin.php` 查看表数量。
 
-## 10. 数据目录规范
+## 11. 数据目录规范
 
 大量 Archive jsonlines 不要放项目根目录，统一使用：
 
@@ -185,7 +202,7 @@ data/
 └── logs/              # 离线工具日志
 ```
 
-## 11. 封面批量下载
+## 12. 封面批量下载
 
 安装离线工具依赖：
 
@@ -205,7 +222,7 @@ python tools/download_covers.py --missing --limit 500 --delay 3
 logs/cover_download.log
 ```
 
-## 12. 索引兼容性说明
+## 13. 索引兼容性说明
 
 `subjects.name` 与 `subjects.name_cn` 是 `VARCHAR(512)` 且使用 `utf8mb4`。为了兼容 InnoDB 单索引键长度限制，联合索引 `idx_subjects_type_name_name_cn` 使用前缀索引：
 

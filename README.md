@@ -58,6 +58,23 @@ cp config/config-example.php config/config.php
 
 唯一测试目录是项目根目录下的 `tests/`。请从项目根目录运行 `pytest`，避免重复 clone 到子目录导致 `import file mismatch`。
 
+
+## 从旧版本升级前后
+
+升级旧版本前，先备份本地配置，避免覆盖或误删 NAS 上的真实数据库密码：
+
+```bash
+cp config/config.php config/config.php.bak
+```
+
+升级后，如果 `config/config.php` 不存在，就从示例配置创建：
+
+```bash
+cp config/config-example.php config/config.php
+```
+
+然后把备份中的 MariaDB 连接、数据库名、管理员用户名和 `password_hash` 合并回新的 `config/config.php`。
+
 ## 数据库设计
 
 公共 Bangumi Archive 数据库：`chrono_bangumi`。
