@@ -1,48 +1,72 @@
 from __future__ import annotations
 
 import argparse
-import sys
-from dataclasses import asdict
 from pathlib import Path
-
-try:
-    from tqdm import tqdm
-except ImportError:  # pragma: no cover
-    tqdm = None
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "backend"))
 
-from app import repositories
-from importer.image_cache import cache_cover_with_metadata
+from tools.download_covers import download_cover, local_cover_path, update_cache
+from tools.php_config_reader import database_config
+
+
+def connect_db(kind: str):
+    try:
+        import pymysql  # type: ignore
+    except ImportError as exc:  # pragma: no cover - depends on operator environment
+        raise SystemExit("请先安装依赖：python -m pip install PyMySQL Pillow") from exc
+    config = database_config(kind)
+    return pymysql.connect(
+        host=config["host"],
+        port=config["port"],
+        user=config["user"],
+        password=config["password"],
+        database=config["database"],
+        charset=config.get("charset", "utf8mb4"),
+        cursorclass=pymysql.cursors.DictCursor,
+        autocommit=True,
+    )
+
+
+def cover_subject_ids(all_items=False, missing=False, anime_id=None, limit=None, retry_failed=False):
+    if anime_id is not None:
+        return [anime_id]
+    public_db = database_config("public")["database"]
+    library_db = database_config("library")["database"]
+    if retry_failed:
+        sql = f"SELECT subject_id AS id FROM `{library_db}`.`cover_cache` WHERE status = 'failed' ORDER BY updated_at"
+    elif missing and not all_items:
+        sql = f"""
+            SELECT s.id
+            FROM `{public_db}`.`subjects` s
+            LEFT JOIN `{library_db}`.`cover_cache` cc ON cc.subject_id = s.id AND cc.status = 'cached'
+            WHERE s.type = 2 AND cc.subject_id IS NULL
+            ORDER BY s.id
+        """
+    else:
+        sql = f"SELECT id FROM `{public_db}`.`subjects` WHERE type = 2 ORDER BY id"
+    if limit is not None:
+        sql += " LIMIT %s"
+    with connect_db("public") as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (limit,) if limit is not None else None)
+            return [int(row["id"]) for row in cur.fetchall()]
 
 
 def cache_covers(all_items=False, missing=False, anime_id=None, limit=None, retry_failed=False):
-    if retry_failed:
-        rows = repositories.failed_cover_ids(limit=limit)
-    else:
-        rows = repositories.iter_covers(missing_only=missing and not all_items, anime_id=anime_id, limit=limit)
-    iterable = tqdm(rows, unit="cover") if tqdm else rows
+    ids = cover_subject_ids(all_items, missing, anime_id, limit, retry_failed)
     ok = failed = skipped = 0
-    failures: list[str] = []
-    for row in iterable:
-        subject_id = int(row["id"])
-        local = ROOT / "media" / "covers" / f"{subject_id}.jpg"
-        if local.exists() and not all_items and not retry_failed:
+    for subject_id in ids:
+        if local_cover_path(subject_id).exists() and not all_items and not retry_failed:
             skipped += 1
             continue
-        result = cache_cover_with_metadata(subject_id)
-        repositories.update_cover_status(subject_id, result.local_path, result.status, asdict(result))
+        result = download_cover(subject_id)
+        update_cache(subject_id, result)
         if result.ok:
             ok += 1
         else:
             failed += 1
-            failures.append(f"{subject_id} {result.error or 'unknown error'}")
-    if failures:
-        log_dir = ROOT / "logs"
-        log_dir.mkdir(exist_ok=True)
-        (log_dir / "cover_failures.log").write_text("\n".join(failures) + "\n", encoding="utf-8")
     print(f"cached={ok} skipped={skipped} failed={failed}")
     return ok, skipped, failed
 

@@ -33,3 +33,9 @@ CREATE TABLE IF NOT EXISTS `cover_cache` (
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`subject_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Recommended indexes for chrono_library.
+CREATE INDEX IF NOT EXISTS `idx_collections_collected` ON `collections` (`collected`);
+CREATE INDEX IF NOT EXISTS `idx_collections_collection_date` ON `collections` (`collection_date`);
+CREATE INDEX IF NOT EXISTS `idx_cover_cache_status` ON `cover_cache` (`status`);
+CREATE INDEX IF NOT EXISTS `idx_cover_cache_updated_at` ON `cover_cache` (`updated_at`);

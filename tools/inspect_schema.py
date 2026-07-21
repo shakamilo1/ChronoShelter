@@ -5,35 +5,58 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "backend"))
 
-from app.database import get_connection, library_database_name, public_database_name
+from tools.php_config_reader import database_config
 
 
-def inspect_table(database: str, table_name: str):
-    with get_connection(database) as conn, conn.cursor() as cur:
-        cur.execute("SHOW TABLES LIKE %s", (table_name,))
-        exists = bool(cur.fetchone())
-        if not exists:
-            print(f"[{database}.{table_name}] missing")
-            return
-        cur.execute(f"SHOW COLUMNS FROM `{table_name}`")
-        columns = cur.fetchall()
-        cur.execute(f"SELECT COUNT(*) AS row_count FROM `{table_name}`")
-        row_count = cur.fetchone()["row_count"]
-    print(f"[{database}.{table_name}] rows={row_count}")
-    for col in columns:
-        nullable = "NULL" if col.get("Null") == "YES" else "NOT NULL"
-        print(f"- {col['Field']} {col['Type']} {nullable} default={col.get('Default')}")
+def connect_database(kind: str):
+    try:
+        import pymysql  # type: ignore
+    except ImportError as exc:  # pragma: no cover - depends on operator environment
+        raise SystemExit("请先安装 PyMySQL：python -m pip install PyMySQL") from exc
+    config = database_config(kind)
+    return pymysql.connect(
+        host=config["host"],
+        port=config["port"],
+        user=config["user"],
+        password=config["password"],
+        database=config["database"],
+        charset=config.get("charset", "utf8mb4"),
+        cursorclass=pymysql.cursors.DictCursor,
+    )
+
+
+def table_columns(kind: str, table: str):
+    config = database_config(kind)
+    with connect_database(kind) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT COLUMN_NAME, COLUMN_TYPE FROM information_schema.columns WHERE table_schema=%s AND table_name=%s ORDER BY ORDINAL_POSITION",
+            (config["database"], table),
+        )
+        return cur.fetchall()
+
+
+def table_count(kind: str, table: str):
+    with connect_database(kind) as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) AS count FROM `{table}`")
+        return cur.fetchone()["count"]
 
 
 def main():
     print("ChronoShelter schema inspection (read-only)")
-    public_db = public_database_name()
-    library_db = library_database_name()
-    for table in ("subjects", "episodes", "persons", "characters", "subject_persons", "subject_characters", "subject_relations", "person_characters", "person_relations"):
-        inspect_table(public_db, table)
-    inspect_table(library_db, "collections")
+    for kind, tables in {
+        "public": ["subjects", "episodes", "persons", "characters", "subject_persons", "subject_characters", "subject_relations"],
+        "library": ["collections"],
+    }.items():
+        database = database_config(kind)["database"]
+        print(f"\n[{database}]")
+        for table in tables:
+            try:
+                cols = table_columns(kind, table)
+                count = table_count(kind, table)
+                print(f"{table}: rows={count} columns={', '.join(col['COLUMN_NAME'] for col in cols)}")
+            except Exception as exc:  # noqa: BLE001 - inspection should continue across missing tables
+                print(f"{table}: ERROR {exc}")
 
 
 if __name__ == "__main__":

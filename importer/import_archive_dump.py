@@ -12,7 +12,44 @@ except ImportError:  # pragma: no cover
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "backend"))
+
+
+def get_public_db_config() -> dict:
+    from tools.php_config_reader import database_config
+
+    return database_config("public")
+
+
+def connect_public_database():
+    try:
+        import pymysql  # type: ignore
+    except ImportError as exc:  # pragma: no cover - depends on operator environment
+        raise SystemExit("请先安装 PyMySQL：python -m pip install PyMySQL") from exc
+    config = get_public_db_config()
+    try:
+        return pymysql.connect(
+            host=config["host"],
+            port=config["port"],
+            user=config["user"],
+            password=config["password"],
+            database=config["database"],
+            charset=config.get("charset", "utf8mb4"),
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=False,
+        )
+    except pymysql.MySQLError as exc:
+        raise SystemExit(f"无法连接 MariaDB 数据库 {config['database']}: {exc}") from exc
+
+
+def get_table_columns(table: str) -> set[str]:
+    config = get_public_db_config()
+    with connect_public_database() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COLUMN_NAME FROM information_schema.columns WHERE table_schema = %s AND table_name = %s",
+                (config["database"], table),
+            )
+            return {row["COLUMN_NAME"] for row in cur.fetchall()}
 
 
 ARCHIVE_FILES = {
@@ -50,21 +87,29 @@ def build_upsert_sql(table: str, row: dict, columns: set[str]) -> tuple[str, dic
     return sql, {key: row[key] for key in writable}
 
 
-def import_jsonlines_file(path: Path, table: str, limit: int | None = None, dry_run: bool = False) -> tuple[int, int]:
-    if not dry_run:
-        from app.database import public_database_name
-        from app.schema_utils import get_table_columns
-        columns = get_table_columns(table, public_database_name())
-    else:
-        columns = set()
-    imported = skipped = 0
+def commit_batch(conn, table: str, sql: str | None, batch: list[dict], committed_total: int) -> int:
+    if not sql or not batch:
+        return committed_total
+    try:
+        with conn.cursor() as cur:
+            cur.executemany(sql, batch)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    committed_total += len(batch)
+    print(f"{table}: committed batch={len(batch)} total={committed_total}")
+    return committed_total
+
+
+def import_jsonlines_file(path: Path, table: str, limit: int | None = None, dry_run: bool = False, batch_size: int = 1000) -> tuple[int, int]:
+    columns = get_table_columns(table) if not dry_run else set()
+    imported = skipped = committed = 0
+    current_sql: str | None = None
+    batch: list[dict] = []
     with path.open("r", encoding="utf-8") as fh:
         iterator = tqdm(fh, unit="row", desc=table) if tqdm else fh
-        if not dry_run:
-            from app.database import get_connection, public_database_name
-            conn_ctx = get_connection(public_database_name())
-        else:
-            conn_ctx = _null_context()
+        conn_ctx = connect_public_database() if not dry_run else _null_context()
         with conn_ctx as conn:
             for line in iterator:
                 if limit is not None and imported >= limit:
@@ -80,9 +125,17 @@ def import_jsonlines_file(path: Path, table: str, limit: int | None = None, dry_
                     skipped += 1
                     continue
                 sql, params = built
-                with conn.cursor() as cur:
-                    cur.execute(sql, params)
+                if current_sql is not None and sql != current_sql:
+                    committed = commit_batch(conn, table, current_sql, batch, committed)
+                    batch = []
+                current_sql = sql
+                batch.append(params)
                 imported += 1
+                if len(batch) >= batch_size:
+                    committed = commit_batch(conn, table, current_sql, batch, committed)
+                    batch = []
+            if not dry_run:
+                commit_batch(conn, table, current_sql, batch, committed)
     return imported, skipped
 
 
@@ -93,7 +146,7 @@ class _null_context:
         return False
 
 
-def import_dump(directory: Path, table: str | None = None, limit: int | None = None, dry_run: bool = False):
+def import_dump(directory: Path, table: str | None = None, limit: int | None = None, dry_run: bool = False, batch_size: int = 1000):
     targets = {table: ARCHIVE_FILES[table]} if table else ARCHIVE_FILES
     totals = {}
     for table_name, filename in targets.items():
@@ -101,7 +154,7 @@ def import_dump(directory: Path, table: str | None = None, limit: int | None = N
         if not path.exists():
             print(f"missing={path}", file=sys.stderr)
             continue
-        totals[table_name] = import_jsonlines_file(path, table_name, limit=limit, dry_run=dry_run)
+        totals[table_name] = import_jsonlines_file(path, table_name, limit=limit, dry_run=dry_run, batch_size=batch_size)
     for table_name, (imported, skipped) in totals.items():
         print(f"{table_name}: imported={imported} skipped={skipped}")
     return totals
@@ -113,8 +166,9 @@ def main():
     parser.add_argument("--table", choices=sorted(ARCHIVE_FILES))
     parser.add_argument("--limit", type=int)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--batch-size", type=int, default=1000, help="Rows per database batch commit. Default: 1000.")
     args = parser.parse_args()
-    import_dump(args.dir, args.table, args.limit, args.dry_run)
+    import_dump(args.dir, args.table, args.limit, args.dry_run, args.batch_size)
 
 
 if __name__ == "__main__":

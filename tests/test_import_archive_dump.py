@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from importer.import_archive_dump import import_dump
 
@@ -21,3 +22,76 @@ def test_archive_dump_dry_run_reads_subject_episode_and_relations(tmp_path):
     assert totals["subject_relations"] == (1, 0)
     assert totals["subject_persons"] == (1, 0)
     assert totals["person_characters"] == (1, 0)
+
+
+def test_importer_does_not_depend_on_fastapi_app_database():
+    source = Path("importer/import_archive_dump.py").read_text(encoding="utf-8")
+    assert "from app.database" not in source
+    assert "from app.schema_utils" not in source
+    assert "tools.php_config_reader" in source
+
+
+class _FakeCursor:
+    def __init__(self, conn):
+        self.conn = conn
+    def __enter__(self):
+        return self
+    def __exit__(self, exc_type, exc, tb):
+        return False
+    def executemany(self, sql, batch):
+        self.conn.executed.append((sql, list(batch)))
+
+
+class _FakeConnection:
+    def __init__(self):
+        self.executed = []
+        self.commits = 0
+        self.rollbacks = 0
+    def __enter__(self):
+        return self
+    def __exit__(self, exc_type, exc, tb):
+        return False
+    def cursor(self):
+        return _FakeCursor(self)
+    def commit(self):
+        self.commits += 1
+    def rollback(self):
+        self.rollbacks += 1
+
+
+def test_archive_import_batches_upserts_and_commits(tmp_path, monkeypatch, capsys):
+    from importer import import_archive_dump as importer
+
+    write_jsonlines(tmp_path / "subject.jsonlines", [
+        {"id": 1, "type": 2, "name": "A"},
+        {"id": 2, "type": 2, "name": "B"},
+        {"id": 3, "type": 2, "name": "C"},
+    ])
+    conn = _FakeConnection()
+    monkeypatch.setattr(importer, "get_table_columns", lambda table: {"id", "type", "name"})
+    monkeypatch.setattr(importer, "connect_public_database", lambda: conn)
+
+    assert importer.import_jsonlines_file(tmp_path / "subject.jsonlines", "subjects", batch_size=2) == (3, 0)
+
+    assert len(conn.executed) == 2
+    assert [len(batch) for _, batch in conn.executed] == [2, 1]
+    assert conn.commits == 2
+    assert conn.rollbacks == 0
+    assert "ON DUPLICATE KEY UPDATE" in conn.executed[0][0]
+    assert "subjects: committed batch=2 total=2" in capsys.readouterr().out
+
+
+def test_archive_import_limit_is_checked_before_batching(tmp_path, monkeypatch):
+    from importer import import_archive_dump as importer
+
+    write_jsonlines(tmp_path / "subject.jsonlines", [
+        {"id": 1, "type": 2, "name": "A"},
+        {"id": 2, "type": 2, "name": "B"},
+        {"id": 3, "type": 2, "name": "C"},
+    ])
+    conn = _FakeConnection()
+    monkeypatch.setattr(importer, "get_table_columns", lambda table: {"id", "type", "name"})
+    monkeypatch.setattr(importer, "connect_public_database", lambda: conn)
+
+    assert importer.import_jsonlines_file(tmp_path / "subject.jsonlines", "subjects", limit=2, batch_size=1000) == (2, 0)
+    assert [len(batch) for _, batch in conn.executed] == [2]

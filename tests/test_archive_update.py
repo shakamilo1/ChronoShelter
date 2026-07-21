@@ -9,12 +9,12 @@ def test_prepare_archive_extracts_valid_zip_atomically(tmp_path, monkeypatch):
         for name in REQUIRED_FILES:
             zf.writestr(f"dump/{name}", "{}\n")
 
-    monkeypatch.setattr("tools.archive_update.CURRENT_TMP_DIR", tmp_path / "current_tmp")
-    monkeypatch.setattr("tools.archive_update.CURRENT_DIR", tmp_path / "current")
+    monkeypatch.setattr("tools.archive_update.EXTRACTED_DIR", tmp_path / "extracted")
+    monkeypatch.setattr("tools.archive_update.PROCESSED_DIR", tmp_path / "processed")
 
-    current = prepare_archive(zip_path)
+    processed = prepare_archive(zip_path)
 
-    assert current == tmp_path / "current"
+    assert processed == tmp_path / "processed"
     for name in REQUIRED_FILES:
-        assert (current / name).exists()
-    assert not (tmp_path / "current_tmp").exists()
+        assert (processed / name).exists()
+    assert not (tmp_path / "extracted").exists()

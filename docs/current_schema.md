@@ -42,7 +42,7 @@ Recommended logical fields:
 - `progress` / `watch_progress` / `watched_eps`
 - `extra_json` / `extra` / `other`
 
-The application uses `backend/app/collection_mapper.py` to map old field names to these logical fields.
+The PHP collection layer writes the canonical `chrono_library.collections` fields directly; legacy field-name mapping is no longer part of the web runtime.
 
 ## Inspection
 
@@ -58,7 +58,8 @@ Database landing SQL is intentionally split into reviewable files under `sql/`:
 
 - `sql/create_chrono_bangumi_tables.sql`: contains `CREATE TABLE` statements for the manually selected `chrono_bangumi` public Archive cache database, with field names and small unsigned integer widths aligned to the official Bangumi Archive README model, including `platform`, `position`, and relation-type enum columns.
 - `sql/create_chrono_library_tables.sql`: contains `CREATE TABLE` statements for the manually selected `chrono_library` personal tables (`collections` plus optional `cover_cache`) without any Bangumi public fields in `collections`.
-- `sql/create_indexes.sql`: creates recommended lookup indexes for poster-wall, detail-page, importer, and cover-cache workflows.
+- `sql/create_chrono_bangumi_indexes.sql`: creates recommended lookup indexes for `chrono_bangumi`.
+- `sql/create_chrono_library_indexes.sql`: creates recommended lookup indexes for `chrono_library`.
 
 These SQL files are generated for manual review/execution only. They must not be run by the application automatically, contain no `CREATE DATABASE` statements, and never reference the legacy `chrono_shelter` database.
 
