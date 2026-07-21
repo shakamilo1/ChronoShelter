@@ -67,3 +67,19 @@ def test_required_query_indexes_exist():
     assert "`idx_subject_relations_subject_related`" in sql
     assert "`idx_person_characters_subject_character`" in sql
     assert "`idx_person_relations_person_related`" in sql
+
+
+def test_subject_name_index_fits_mariadb_utf8mb4_key_limit():
+    """The subject search index must be creatable on InnoDB with utf8mb4.
+
+    InnoDB's common maximum index key length is 3072 bytes. `type` is a
+    TINYINT (1 byte) and the two VARCHAR prefixes use up to 4 bytes per
+    utf8mb4 character, so 1 + 191*4 + 191*4 = 1529 bytes.
+    """
+    sql = Path("sql/create_indexes.sql").read_text()
+    full_index = "ON `subjects` (`type`, `name`, `name_cn`)"
+    prefix_index = "ON `subjects` (`type`, `name`(191), `name_cn`(191))"
+
+    assert full_index not in sql
+    assert prefix_index in sql
+    assert 1 + (191 * 4) + (191 * 4) <= 3072
