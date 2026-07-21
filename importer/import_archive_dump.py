@@ -69,8 +69,21 @@ def _json(value):
     return json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value
 
 
+def normalize_appear_eps(value):
+    if value == "":
+        return None
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        return [int(part.strip()) for part in value.split(",") if part.strip()]
+    return value
+
+
 def normalize_row(item: dict) -> dict:
-    return {key: _json(value) for key, value in item.items()}
+    normalized = dict(item)
+    if "appear_eps" in normalized:
+        normalized["appear_eps"] = normalize_appear_eps(normalized["appear_eps"])
+    return {key: _json(value) for key, value in normalized.items()}
 
 
 def build_upsert_sql(table: str, row: dict, columns: set[str]) -> tuple[str, dict] | None:
