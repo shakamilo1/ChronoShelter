@@ -26,7 +26,7 @@ ChronoShelter/
 │   ├── css/
 │   ├── js/
 │   └── img/
-├── covers/                # 本地缓存封面：covers/{subject_id}.jpg
+├── covers/                # 本地缓存封面：covers/subjects/{分片}/{subject_id}.{ext}
 ├── data/                  # Archive 输入、处理结果与离线日志
 ├── database/              # 新部署初始化 schema
 ├── docs/                  # 部署与维护文档
@@ -190,13 +190,14 @@ covers/{subject_id}.jpg
 'covers' => [
     'directory' => dirname(__DIR__) . '/covers',
     'public_path' => 'covers',
-    'placeholder' => 'logo.png',
+    'subjects_directory' => 'subjects',
+    'fallback' => 'logo.png',
 ],
 ```
 
-页面优先显示 `covers/{subject_id}.jpg`；条目封面不存在或为空时显示 `covers/logo.png`。如果配置的占位图也不存在，则退回 `static/img/placeholder.svg`。PHP 页面不会访问 Bangumi、不会在渲染期间下载封面，也不会因为外部站点不可达而等待超时。
+页面优先显示分片目录中的本地封面，例如 `covers/subjects/000/491/491569.jpg`；条目封面不存在、为空或损坏时立即显示 `covers/logo.png`。如果配置的占位图也不存在，则退回 `static/img/placeholder.svg`。PHP 页面不会访问 Bangumi、不会在渲染期间下载封面，也不会因为外部站点不可达而等待超时。
 
-需要补充条目封面时，应在能够访问 Bangumi 的独立维护环境中运行离线工具，再把 `covers/` 和相应缓存记录同步到 NAS；不要从网页请求触发下载。
+动画封面只通过 PHP CLI 离线同步工具维护，详见 [`docs/bangumi_cover_sync.md`](docs/bangumi_cover_sync.md)。需要补充条目封面时，应在能够访问 Bangumi 的独立维护环境中运行 `php bin/bangumi_covers.php sync --resume`，再把 `covers/subjects/` 同步到 NAS，并在 NAS 本地准备 `covers/logo.png`；不要从网页请求触发下载。
 
 ## 数据目录规范
 
@@ -226,7 +227,7 @@ python importer/import_archive_dump.py --dir data/archive/processed --dry-run
 python importer/import_archive_dump.py --dir data/archive/processed
 python importer/import_archive_dump.py --dir data/archive/processed --batch-size 1000
 python tools/archive_update.py --latest
-python tools/cache_covers.py --missing --limit 100
+php bin/bangumi_covers.php sync --max-pages=1 --max-items=10 --dry-run
 python importer/bangumi_data_sync.py --help
 ```
 
@@ -323,37 +324,42 @@ CHRONOSHELTER_AUTH_PASSWORD_HASH='password_hash 输出值'
 
 ## 封面批量下载工具
 
-网页浏览不会联网补齐封面。只有在当前维护环境能够访问 Bangumi 时，才可手动运行离线 Python 工具：
+网页浏览不会联网补齐封面。只有在当前维护环境能够访问 Bangumi 时，才可手动运行离线 PHP CLI 工具。该工具固定只扫描 `type=2` 动画，使用 Bangumi 批量接口、`limit=100`、`images.large`，并把封面保存到 `covers/subjects/` 两级分片目录。
+
+小规模验证：
 
 ```bash
-python tools/download_covers.py --missing
+php bin/bangumi_covers.php sync --max-pages=1 --max-items=10 --dry-run
 ```
 
-限制数量：
+首次全量同步或中断后恢复：
 
 ```bash
-python tools/download_covers.py --missing --limit 500
+php bin/bangumi_covers.php sync --resume
 ```
 
-降低下载速度、避免给 Bangumi API 造成压力：
+检查新动画和封面变化：
 
 ```bash
-python tools/download_covers.py --missing --delay 10
+php bin/bangumi_covers.php check-updates --resume
 ```
 
-默认延迟为 3 秒。工具查询 `chrono_bangumi.subjects(type=2)`，跳过已有 `chrono_library.cover_cache` 记录或本地已有 `covers/{subject_id}.jpg` 的条目，将封面保存到 `covers/`。运行时可按 `Ctrl+C` 安全停止；已经成功下载的图片会保留，下次运行会自动跳过并继续。失败日志写入：
-
-```text
-logs/cover_download.log
-```
-
-该工具需要 PyMySQL 和 Pillow：
+应用已发现的新封面或变化：
 
 ```bash
-python -m pip install PyMySQL Pillow
+php bin/bangumi_covers.php apply-updates --resume
 ```
 
-其中：
+随机深度抽查：
 
-- PyMySQL 用于连接 MariaDB。
-- Pillow 用于验证图片完整性。
+```bash
+php bin/bangumi_covers.php deep-check --sample=100
+```
+
+重试失败项目：
+
+```bash
+php bin/bangumi_covers.php retry-failed
+```
+
+同步清单使用非公开 SQLite：`var/cover-sync/covers.sqlite`。正式服务器无法访问 Bangumi 时，复制 `covers/subjects/` 并在服务器本地准备好 `covers/logo.png` 后，网站仍可正常显示本地封面或立即回退到 `covers/logo.png`。完整说明见 [`docs/bangumi_cover_sync.md`](docs/bangumi_cover_sync.md)。

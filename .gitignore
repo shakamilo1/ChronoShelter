@@ -11,6 +11,7 @@ venv/
 /database.yml
 *.local.*
 # Runtime data and generated files.
+/var/cover-sync/*
 /data/archive/*.jsonlines
 /data/archive/incoming/*
 /data/archive/extracted/*
