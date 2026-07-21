@@ -20,7 +20,6 @@ return [
     'covers' => [
         'directory' => dirname(__DIR__) . '/covers',
         'public_path' => 'covers',
-        'api_url' => 'https://api.bgm.tv/v0/subjects/%d/image?type=large',
-        'no_icon_url' => 'https://lain.bgm.tv/img/no_icon_subject.png',
+        'placeholder' => 'logo.png',
     ],
 ];
