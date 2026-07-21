@@ -184,9 +184,19 @@ CHRONOSHELTER_LIBRARY_DB_NAME=chrono_library
 covers/{subject_id}.jpg
 ```
 
-如果本地文件不存在或为空，页面会立即显示 `static/img/placeholder.svg`。PHP 页面不会访问 Bangumi、不会在渲染期间下载封面，也不会因为外部站点不可达而等待超时。
+本地占位图在 `config/config.php` 中配置：
 
-需要补充封面时，应在能够访问 Bangumi 的独立维护环境中运行离线工具，再把 `covers/` 和相应缓存记录同步到 NAS；不要从网页请求触发下载。
+```php
+'covers' => [
+    'directory' => dirname(__DIR__) . '/covers',
+    'public_path' => 'covers',
+    'placeholder' => 'logo.png',
+],
+```
+
+页面优先显示 `covers/{subject_id}.jpg`；条目封面不存在或为空时显示 `covers/logo.png`。如果配置的占位图也不存在，则退回 `static/img/placeholder.svg`。PHP 页面不会访问 Bangumi、不会在渲染期间下载封面，也不会因为外部站点不可达而等待超时。
+
+需要补充条目封面时，应在能够访问 Bangumi 的独立维护环境中运行离线工具，再把 `covers/` 和相应缓存记录同步到 NAS；不要从网页请求触发下载。
 
 ## 数据目录规范
 
