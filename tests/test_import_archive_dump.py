@@ -30,8 +30,11 @@ def test_subject_persons_appear_eps_is_normalized_for_json_column():
     assert normalize_appear_eps("") is None
     assert normalize_appear_eps("9,25") == [9, 25]
     assert normalize_appear_eps("1,2,3") == [1, 2, 3]
+    assert normalize_appear_eps("1,abc,3") == [1, 3]
+    assert normalize_appear_eps("abc") is None
     assert normalize_appear_eps([1, 2, 3]) == [1, 2, 3]
     assert normalize_row({"subject_id": 1, "person_id": 2, "appear_eps": "1,2,3"})["appear_eps"] == "[1, 2, 3]"
+    assert normalize_row({"subject_id": 1, "person_id": 2, "appear_eps": "1,abc,3"})["appear_eps"] == "[1, 3]"
     assert normalize_row({"subject_id": 1, "person_id": 2, "appear_eps": ""})["appear_eps"] is None
 
 

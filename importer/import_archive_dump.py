@@ -75,7 +75,15 @@ def normalize_appear_eps(value):
     if isinstance(value, list):
         return value
     if isinstance(value, str):
-        return [int(part.strip()) for part in value.split(",") if part.strip()]
+        episodes = []
+        for part in value.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if not part.isdecimal():
+                continue
+            episodes.append(int(part))
+        return episodes or None
     return value
 
 
