@@ -26,6 +26,8 @@ ChronoShelter/
 │   ├── js/
 │   └── img/
 ├── covers/                # 本地缓存封面：covers/{subject_id}.jpg
+├── database/              # 新部署初始化 schema
+├── docs/                  # 部署与维护文档
 ├── importer/              # 离线导入工具，继续保留
 ├── tools/                 # 离线管理工具，继续保留
 └── sql/                   # 数据库结构与迁移 SQL
@@ -51,6 +53,47 @@ ChronoShelter/
 - `cover_cache`
 
 网站只展示 `subjects.type = 2` 的动画数据，暂时忽略音乐、游戏、三次元等其他类型。收藏功能只写入 `chrono_library.collections`。项目不再使用旧库 `chrono_shelter`，也不依赖旧表 `bangumi_anime`。
+
+## 初始化数据库
+
+首次部署需要先创建两个空数据库，然后导入表结构。SQL 文件只包含表结构、索引和必要约束，不包含用户数据、私人收藏或大量动画数据。
+
+```sql
+CREATE DATABASE IF NOT EXISTS chrono_bangumi CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE IF NOT EXISTS chrono_library CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
+
+```bash
+mysql -u root -p chrono_bangumi < database/chrono_bangumi_schema.sql
+mysql -u root -p chrono_library < database/chrono_library_schema.sql
+```
+
+Bangumi Archive 数据需要通过 Python importer 离线导入：
+
+```bash
+python importer/import_archive_dump.py --dir data/archive/current --dry-run
+python importer/import_archive_dump.py --dir data/archive/current
+```
+
+## 数据库用户权限
+
+不要使用 MariaDB root/admin 用户运行网站。建议创建单独用户：
+
+```sql
+CREATE USER 'chronoshelter'@'%' IDENTIFIED BY 'change-this-password';
+
+GRANT SELECT
+ON chrono_bangumi.*
+TO 'chronoshelter'@'%';
+
+GRANT SELECT, INSERT, UPDATE, DELETE
+ON chrono_library.*
+TO 'chronoshelter'@'%';
+
+FLUSH PRIVILEGES;
+```
+
+如果 Web 服务与 MariaDB 在同一台机器，可以把 `'%'` 改为 `'localhost'`。完整部署流程见 [`docs/deployment.md`](docs/deployment.md)。
 
 ## 数据库连接配置方法
 
@@ -145,7 +188,7 @@ http://127.0.0.1:8080/index.php
 ## ASUSTOR 部署方法
 
 1. 在 ASUSTOR App Central 安装并启用 Web Center、Nginx、PHP 8.4、MariaDB、phpMyAdmin。
-2. 在 phpMyAdmin 中创建/导入两个数据库：`chrono_bangumi` 与 `chrono_library`。
+2. 按 [`docs/deployment.md`](docs/deployment.md) 创建 `chrono_bangumi` 与 `chrono_library`，并导入 `database/` 下的 schema。
 3. 将整个 `ChronoShelter/` 目录复制到：
 
    ```text
@@ -160,7 +203,8 @@ http://127.0.0.1:8080/index.php
    /Web/ChronoShelter/covers
    ```
 
-7. 通过浏览器访问 Web Center 配置的站点 URL。
+7. 访问 `install_check.php` 检查 PHP、PDO MySQL、MariaDB 连接与必要表。部署完成后建议删除或限制访问该检查页。
+8. 通过浏览器访问 Web Center 配置的站点 URL。
 
 ## 废弃/删除的运行入口
 

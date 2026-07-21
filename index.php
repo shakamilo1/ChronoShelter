@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/includes/auth.php';
+require_once __DIR__ . '/includes/install.php';
 require_once __DIR__ . '/includes/csrf.php';
 require_once __DIR__ . '/includes/bangumi.php';
 require_once __DIR__ . '/includes/collection.php';
@@ -19,10 +20,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'colle
 
 $page = max(1, (int) ($_GET['page'] ?? 1));
 $perPage = 50;
-$totalItems = count_anime();
-$totalPages = max(1, (int) ceil($totalItems / $perPage));
-$page = min($page, $totalPages);
-$items = list_anime($perPage, ($page - 1) * $perPage);
+try {
+    $totalItems = count_anime();
+    $totalPages = max(1, (int) ceil($totalItems / $perPage));
+    $page = min($page, $totalPages);
+    $items = list_anime($perPage, ($page - 1) * $perPage);
+} catch (Throwable $error) {
+    render_setup_error($error);
+}
 $title = '首页海报墙';
 require __DIR__ . '/templates/header.php';
 ?>

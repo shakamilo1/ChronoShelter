@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/includes/auth.php';
+require_once __DIR__ . '/includes/install.php';
 require_once __DIR__ . '/includes/csrf.php';
 require_once __DIR__ . '/includes/bangumi.php';
 require_once __DIR__ . '/includes/collection.php';
@@ -13,7 +14,11 @@ $id = (int) ($_GET['id'] ?? $_POST['subject_id'] ?? 0);
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
 }
-$subject = get_subject($id);
+try {
+    $subject = get_subject($id);
+} catch (Throwable $error) {
+    render_setup_error($error);
+}
 if (!$subject) {
     http_response_code(404);
     exit('Subject not found');

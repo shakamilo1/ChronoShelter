@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/includes/auth.php';
+require_once __DIR__ . '/includes/install.php';
 require_once __DIR__ . '/includes/collection.php';
 require_once __DIR__ . '/includes/bangumi.php';
 require_once __DIR__ . '/includes/image.php';
@@ -11,10 +12,14 @@ require_login();
 
 $page = max(1, (int) ($_GET['page'] ?? 1));
 $perPage = 50;
-$totalItems = count_collections();
-$totalPages = max(1, (int) ceil($totalItems / $perPage));
-$page = min($page, $totalPages);
-$items = list_collections($perPage, ($page - 1) * $perPage);
+try {
+    $totalItems = count_collections();
+    $totalPages = max(1, (int) ceil($totalItems / $perPage));
+    $page = min($page, $totalPages);
+    $items = list_collections($perPage, ($page - 1) * $perPage);
+} catch (Throwable $error) {
+    render_setup_error($error);
+}
 $title = '我的收藏';
 require __DIR__ . '/templates/header.php';
 ?>
