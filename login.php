@@ -6,16 +6,16 @@ require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/csrf.php';
 
 if (is_logged_in()) {
-    header('Location: index.php');
+    header('Location: ./');
     exit;
 }
 
 $error = '';
-$next = (string) ($_GET['next'] ?? $_POST['next'] ?? 'index.php');
+$next = auth_safe_target((string) ($_GET['next'] ?? $_POST['next'] ?? './'));
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
     if (login_user((string) ($_POST['username'] ?? ''), (string) ($_POST['password'] ?? ''))) {
-        header('Location: ' . (str_starts_with($next, '/') ? $next : 'index.php'));
+        header('Location: ' . $next);
         exit;
     }
     $error = '用户名或密码错误。';
