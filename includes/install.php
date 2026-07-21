@@ -17,7 +17,7 @@ function render_setup_error(Throwable $error): never
         echo '<pre>mysql -u root -p chrono_bangumi &lt; database/chrono_bangumi_schema.sql' . "\n" . 'mysql -u root -p chrono_library &lt; database/chrono_library_schema.sql</pre>';
         echo '<p>公共 Bangumi Archive 数据表创建后，还需要用 Python importer 导入 Archive 数据。</p>';
     } else {
-        echo '<p>数据库连接或查询失败。请检查 <code>config.php</code> 中的 MariaDB 主机、用户、密码和数据库名。</p>';
+        echo '<p>数据库连接或查询失败。请检查 <code>config/config.php</code> 中的 MariaDB 主机、用户、密码和数据库名。</p>';
     }
     echo '<p>详细部署流程见 <a href="docs/deployment.md">docs/deployment.md</a>。部署检查可访问 <a href="install_check.php">install_check.php</a>。</p>';
     echo '<details><summary>错误详情</summary><pre>' . h($message) . '</pre></details>';

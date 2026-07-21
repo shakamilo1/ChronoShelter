@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import signal
 import sys
@@ -14,6 +13,10 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from tools.php_config_reader import database_config
+
 COVERS_DIR = ROOT / "covers"
 LOG_FILE = ROOT / "logs" / "cover_download.log"
 IMAGE_API = "https://api.bgm.tv/v0/subjects/{subject_id}/image?type=large"
@@ -46,20 +49,21 @@ def db_identifier(name: str) -> str:
     return name
 
 
-def connect_db(database: str):
-    database = db_identifier(database)
+def connect_db(kind: str):
     try:
         import pymysql  # type: ignore
     except ImportError as exc:  # pragma: no cover - depends on local operator env
         raise SystemExit("请先安装依赖：python -m pip install PyMySQL Pillow") from exc
+    config = database_config(kind)
+    database = db_identifier(str(config["database"]))
     try:
         return pymysql.connect(
-            host=os.getenv("CHRONOSHELTER_DB_HOST", "127.0.0.1"),
-            port=int(os.getenv("CHRONOSHELTER_DB_PORT", "3306")),
-            user=os.getenv("CHRONOSHELTER_DB_USER", "chronoshelter"),
-            password=os.getenv("CHRONOSHELTER_DB_PASSWORD", "change-me"),
+            host=config["host"],
+            port=config["port"],
+            user=config["user"],
+            password=config["password"],
             database=database,
-            charset="utf8mb4",
+            charset=config.get("charset", "utf8mb4"),
             cursorclass=pymysql.cursors.DictCursor,
             autocommit=True,
         )
@@ -72,8 +76,8 @@ def local_cover_path(subject_id: int) -> Path:
 
 
 def missing_subject_ids(limit: int | None = None) -> list[int]:
-    public_db = db_identifier(os.getenv("CHRONOSHELTER_PUBLIC_DB_NAME", "chrono_bangumi"))
-    library_db = db_identifier(os.getenv("CHRONOSHELTER_LIBRARY_DB_NAME", "chrono_library"))
+    public_db = db_identifier(str(database_config("public")["database"]))
+    library_db = db_identifier(str(database_config("library")["database"]))
     sql = f"""
         SELECT s.id
         FROM `{public_db}`.`subjects` s
@@ -83,7 +87,7 @@ def missing_subject_ids(limit: int | None = None) -> list[int]:
     """
     if limit is not None:
         sql += " LIMIT %s"
-    with connect_db(public_db) as conn:
+    with connect_db("public") as conn:
         with conn.cursor() as cur:
             cur.execute(sql, (limit,) if limit is not None else None)
             rows = cur.fetchall()
@@ -112,8 +116,8 @@ def log_failure(subject_id: int, error: str) -> None:
 
 
 def update_cache(subject_id: int, result: DownloadResult) -> None:
-    library_db = db_identifier(os.getenv("CHRONOSHELTER_LIBRARY_DB_NAME", "chrono_library"))
-    with connect_db(library_db) as conn:
+    library_db = db_identifier(str(database_config("library")["database"]))
+    with connect_db("library") as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """

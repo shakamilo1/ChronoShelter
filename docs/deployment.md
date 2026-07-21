@@ -34,11 +34,11 @@
 
 项目根目录就是 `ChronoShelter/`。所有 Python 工具、SQL 和测试都从这个目录运行；不要把仓库 clone 成 `ChronoShelter/ChronoShelter/`。
 
-首次部署复制示例配置，本地真实配置不要提交 Git：
+进入项目根目录并编辑唯一配置文件：
 
 ```bash
 cd /Web/ChronoShelter
-cp config-example.php config.php
+# 编辑 config/config.php
 ```
 
 唯一测试目录是项目根目录下的 `tests/`，`pytest.ini` 也位于项目根目录。请从 `ChronoShelter/` 运行 `pytest`，避免重复 clone 到子目录导致 `import file mismatch`。
@@ -100,12 +100,12 @@ FLUSH PRIVILEGES;
 
 如果 MariaDB 与 Web 服务在同一台机器，也可以把 `'%'` 改成 `'localhost'`。
 
-## 6. 修改 `config.php`
+## 6. 修改 `config/config.php`
 
 编辑：
 
 ```text
-/Web/ChronoShelter/config.php
+/Web/ChronoShelter/config/config.php
 ```
 
 填入 MariaDB 主机、端口、用户名、密码和数据库名。示例：
@@ -130,7 +130,7 @@ FLUSH PRIVILEGES;
 php -r "echo password_hash('your-admin-password', PASSWORD_DEFAULT);"
 ```
 
-将输出填入 `config.php`：
+将输出填入 `config/config.php`：
 
 ```php
 'auth' => [
@@ -142,7 +142,7 @@ php -r "echo password_hash('your-admin-password', PASSWORD_DEFAULT);"
 
 不要把明文密码写入配置文件。
 
-`config.php` 已被 `.gitignore` 忽略；仓库只提交 `config-example.php`。以后执行 `git pull` 不会覆盖你的本地真实配置。新增示例配置时使用 `文件名-example.扩展名` 命名，例如 `.env-example`、`local_config-example.py`。
+`config/config.php` 是唯一数据库配置来源，PHP 网站和 Python importer 共用它。不要新增 `db_config.py`、`database_config.py` 等第二套密码配置。新增其他示例配置时使用 `文件名-example.扩展名` 命名，例如 `.env-example`、`local_config-example.py`。
 
 ## 8. 部署检查
 

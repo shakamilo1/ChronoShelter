@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from importer.import_archive_dump import import_dump
 
@@ -21,3 +22,10 @@ def test_archive_dump_dry_run_reads_subject_episode_and_relations(tmp_path):
     assert totals["subject_relations"] == (1, 0)
     assert totals["subject_persons"] == (1, 0)
     assert totals["person_characters"] == (1, 0)
+
+
+def test_importer_does_not_depend_on_fastapi_app_database():
+    source = Path("importer/import_archive_dump.py").read_text()
+    assert "from app.database" not in source
+    assert "from app.schema_utils" not in source
+    assert "tools.php_config_reader" in source

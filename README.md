@@ -11,8 +11,8 @@ ChronoShelter/
 ├── collection.php         # 我的收藏
 ├── collection_edit.php    # 收藏编辑页
 ├── admin.php              # 管理页面
-├── config-example.php     # 示例配置；首次部署复制为 config.php
-├── config.php             # 本地真实配置；不提交 Git
+├── config/
+│   └── config.php         # PHP 与 Python 共享的唯一配置文件
 ├── includes/
 │   ├── database.php       # PDO 工厂与 HTML 转义
 │   ├── bangumi.php        # chrono_bangumi 查询
@@ -41,18 +41,18 @@ ChronoShelter/
 ```bash
 git clone <repo-url> ChronoShelter
 cd ChronoShelter
-cp config-example.php config.php
+# 编辑 config/config.php
 ```
 
 然后按顺序执行：
 
-1. 修改 `config.php` 中的 MariaDB 连接和管理员密码哈希。
+1. 修改 `config/config.php` 中的 MariaDB 连接和管理员密码哈希。
 2. 创建 `chrono_bangumi` 与 `chrono_library`。
 3. 执行 `database/chrono_bangumi_schema.sql` 与 `database/chrono_library_schema.sql`。
 4. 将 Bangumi Archive zip 放入 `data/archive/incoming/`，解压/处理到 `data/archive/processed/`。
 5. 使用 `python importer/import_archive_dump.py --dir data/archive/processed` 导入公共 Archive 数据。
 6. 用 PHP 8.4 / ASUSTOR Web Center 指向项目根目录。
-7. 打开网站，跳转登录页后使用 `config.php` 中配置的管理员账号登录。
+7. 打开网站，跳转登录页后使用 `config/config.php` 中配置的管理员账号登录。
 
 唯一测试目录是项目根目录下的 `tests/`。请从项目根目录运行 `pytest`，避免重复 clone 到子目录导致 `import file mismatch`。
 
@@ -130,7 +130,7 @@ FLUSH PRIVILEGES;
 
 ## 数据库连接配置方法
 
-示例配置为 `config-example.php`。首次部署请复制为本地配置 `config.php`，也可以通过环境变量覆盖：
+`config/config.php` 是 PHP 与 Python importer 共享的唯一配置来源，也可以通过环境变量覆盖：
 
 ```bash
 CHRONOSHELTER_DB_HOST=127.0.0.1
@@ -141,12 +141,12 @@ CHRONOSHELTER_PUBLIC_DB_NAME=chrono_bangumi
 CHRONOSHELTER_LIBRARY_DB_NAME=chrono_library
 ```
 
-在 ASUSTOR 上编辑本地 `config.php`，将用户和密码改为 MariaDB/phpMyAdmin 中创建的账号。该账号需要：
+在 ASUSTOR 上编辑 `config/config.php`，将用户和密码改为 MariaDB/phpMyAdmin 中创建的账号。该账号需要：
 
 - 对 `chrono_bangumi` 有读取权限。
 - 对 `chrono_library.collections` 和 `chrono_library.cover_cache` 有读取、插入、更新权限。
 
-`config.php`、`.env`、`local_config.py`、`database.yml` 等真实本地配置已被 `.gitignore` 忽略；仓库只提交 `config-example.php` / `*-example.*` 示例配置。以后执行 `git pull` 不会覆盖你的本地 `config.php`。
+不要新增 `db_config.py`、`database_config.py` 等第二套数据库密码配置；Python importer 会读取同一份 `config/config.php`。如需增加其他类型示例配置，使用 `文件名-example.扩展名` 命名。
 
 ## 页面功能
 
@@ -231,7 +231,7 @@ php -S 127.0.0.1:8080
 http://127.0.0.1:8080/index.php
 ```
 
-如需连接真实 MariaDB，请先在 `config.php` 或环境变量中配置 `chrono_bangumi` 与 `chrono_library`。
+如需连接真实 MariaDB，请先在 `config/config.php` 或环境变量中配置 `chrono_bangumi` 与 `chrono_library`。
 
 ## ASUSTOR 部署方法
 
@@ -244,7 +244,7 @@ http://127.0.0.1:8080/index.php
    ```
 
 4. 确认 Web Center 的站点根目录指向 `/Web/ChronoShelter`，PHP 版本选择 PHP 8.4。
-5. 编辑 `/Web/ChronoShelter/config.php`，填写 MariaDB 主机、端口、用户名、密码和数据库名。
+5. 编辑 `/Web/ChronoShelter/config/config.php`，填写 MariaDB 主机、端口、用户名、密码和数据库名。
 6. 确保 Web 服务用户可写入：
 
    ```text
@@ -275,7 +275,7 @@ ChronoShelter 是私人 NAS 应用，默认启用单用户登录。未登录访�
 - `collection_edit.php`
 - `admin.php`
 
-认证配置位于 `config.php`：
+认证配置位于 `config/config.php`：
 
 ```php
 'auth' => [

@@ -6,9 +6,7 @@ function app_config(): array
 {
     static $config = null;
     if ($config === null) {
-        $configPath = dirname(__DIR__) . '/config.php';
-        $examplePath = dirname(__DIR__) . '/config-example.php';
-        $config = require (is_file($configPath) ? $configPath : $examplePath);
+        $config = require dirname(__DIR__) . '/config/config.php';
     }
     return $config;
 }
