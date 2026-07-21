@@ -31,6 +31,7 @@ python tools/archive_update.py --file archive.zip
 # or: python tools/archive_update.py --url <release.zip>
 python importer/import_archive_dump.py --dir data/archive/processed --dry-run
 python importer/import_archive_dump.py --dir data/archive/processed
+python importer/import_archive_dump.py --dir data/archive/processed --batch-size 1000
 ```
 
 The Archive updater never touches `chrono_library.collections`.

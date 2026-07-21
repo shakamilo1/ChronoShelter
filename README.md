@@ -106,6 +106,7 @@ Bangumi Archive 数据需要通过 Python importer 离线导入：
 ```bash
 python importer/import_archive_dump.py --dir data/archive/processed --dry-run
 python importer/import_archive_dump.py --dir data/archive/processed
+python importer/import_archive_dump.py --dir data/archive/processed --batch-size 1000
 ```
 
 ## 数据库用户权限
@@ -204,6 +205,7 @@ data/
 ```bash
 python importer/import_archive_dump.py --dir data/archive/processed --dry-run
 python importer/import_archive_dump.py --dir data/archive/processed
+python importer/import_archive_dump.py --dir data/archive/processed --batch-size 1000
 python tools/archive_update.py --latest
 python tools/cache_covers.py --missing --limit 100
 python importer/bangumi_data_sync.py --help
