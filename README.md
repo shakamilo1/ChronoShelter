@@ -178,25 +178,15 @@ CHRONOSHELTER_LIBRARY_DB_NAME=chrono_library
 
 ## 图片缓存
 
-封面缓存使用本地目录：
+网页请求只读取本地目录中的封面：
 
 ```text
 covers/{subject_id}.jpg
 ```
 
-图片来源：
+如果本地文件不存在或为空，页面会立即显示 `static/img/placeholder.svg`。PHP 页面不会访问 Bangumi、不会在渲染期间下载封面，也不会因为外部站点不可达而等待超时。
 
-```text
-https://api.bgm.tv/v0/subjects/{id}/image?type=large
-```
-
-下载时会拒绝 Bangumi 的无图占位地址：
-
-```text
-https://lain.bgm.tv/img/no_icon_subject.png
-```
-
-如果 `chrono_library.cover_cache` 可用，缓存状态会记录在该表中。
+需要补充封面时，应在能够访问 Bangumi 的独立维护环境中运行离线工具，再把 `covers/` 和相应缓存记录同步到 NAS；不要从网页请求触发下载。
 
 ## 数据目录规范
 
@@ -323,7 +313,7 @@ CHRONOSHELTER_AUTH_PASSWORD_HASH='password_hash 输出值'
 
 ## 封面批量下载工具
 
-网页浏览时仍会尝试少量补齐缺失封面；大批量下载请使用离线 Python 工具：
+网页浏览不会联网补齐封面。只有在当前维护环境能够访问 Bangumi 时，才可手动运行离线 Python 工具：
 
 ```bash
 python tools/download_covers.py --missing
