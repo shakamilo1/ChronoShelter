@@ -55,6 +55,13 @@ mysql -u root -p chrono_bangumi < database/chrono_bangumi_schema.sql
 mysql -u root -p chrono_library < database/chrono_library_schema.sql
 ```
 
+如需在 phpMyAdmin 中单独补建索引，请分别进入对应数据库后导入单库索引文件，或用命令行指定数据库名：
+
+```bash
+mysql -u root -p chrono_bangumi < sql/create_chrono_bangumi_indexes.sql
+mysql -u root -p chrono_library < sql/create_chrono_library_indexes.sql
+```
+
 导入表结构后，`chrono_bangumi` 仍然是空的。Bangumi Archive 数据需要离线导入：
 
 ```bash
