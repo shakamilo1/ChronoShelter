@@ -170,3 +170,14 @@ python tools/download_covers.py --missing --limit 500 --delay 3
 ```text
 logs/cover_download.log
 ```
+
+## 11. 索引兼容性说明
+
+`subjects.name` 与 `subjects.name_cn` 是 `VARCHAR(512)` 且使用 `utf8mb4`。为了兼容 InnoDB 单索引键长度限制，联合索引 `idx_subjects_type_name_name_cn` 使用前缀索引：
+
+```sql
+CREATE INDEX IF NOT EXISTS `idx_subjects_type_name_name_cn`
+ON `subjects` (`type`, `name`(191), `name_cn`(191));
+```
+
+不要改回完整 `name` / `name_cn` 联合索引，否则部分 MySQL/MariaDB 环境会因 key length 超过 3072 bytes 而导入失败。

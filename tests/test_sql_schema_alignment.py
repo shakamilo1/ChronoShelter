@@ -62,7 +62,7 @@ def test_archive_small_unsigned_types_are_preserved():
 def test_required_query_indexes_exist():
     sql = Path("sql/create_indexes.sql").read_text()
     assert "`idx_subjects_type_name_name_cn`" in sql
-    assert "ON `subjects` (`type`, `name`, `name_cn`)" in sql
+    assert "ON `subjects` (`type`, `name`(191), `name_cn`(191))" in sql
     assert "`idx_episodes_subject_id`" in sql
     assert "`idx_subject_relations_subject_related`" in sql
     assert "`idx_person_characters_subject_character`" in sql

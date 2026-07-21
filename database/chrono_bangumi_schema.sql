@@ -104,7 +104,8 @@ CREATE TABLE IF NOT EXISTS `person_relations` (
 
 -- Recommended indexes for chrono_bangumi.
 CREATE INDEX IF NOT EXISTS `idx_subjects_type` ON `subjects` (`type`);
-CREATE INDEX IF NOT EXISTS `idx_subjects_type_name_name_cn` ON `subjects` (`type`, `name`, `name_cn`);
+-- Prefix lengths avoid exceeding InnoDB 3072-byte key limit with utf8mb4 VARCHAR(512).
+CREATE INDEX IF NOT EXISTS `idx_subjects_type_name_name_cn` ON `subjects` (`type`, `name`(191), `name_cn`(191));
 CREATE INDEX IF NOT EXISTS `idx_subjects_name` ON `subjects` (`name`);
 CREATE INDEX IF NOT EXISTS `idx_subjects_name_cn` ON `subjects` (`name_cn`);
 CREATE INDEX IF NOT EXISTS `idx_subjects_type_date` ON `subjects` (`type`, `date`);

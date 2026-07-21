@@ -68,6 +68,9 @@ mysql -u root -p chrono_bangumi < database/chrono_bangumi_schema.sql
 mysql -u root -p chrono_library < database/chrono_library_schema.sql
 ```
 
+
+注意：`subjects.name` 与 `subjects.name_cn` 使用 `VARCHAR(512)` + `utf8mb4`。初始化 SQL 中的 `idx_subjects_type_name_name_cn` 已使用 `name(191), name_cn(191)` 前缀索引，以避免 InnoDB 单索引键长度超过 3072 bytes。
+
 Bangumi Archive 数据需要通过 Python importer 离线导入：
 
 ```bash
