@@ -27,12 +27,34 @@ function cover_url(int $subjectId, ?string $localPath = null): string
         return h(cover_public_url($publicPath, $relativePath));
     }
 
-    $fallbackPath = $directory . '/' . $fallback;
-    if (cover_file_is_valid($fallbackPath)) {
-        return h(cover_public_url($publicPath, rawurlencode($fallback)));
-    }
+    return h(cover_fallback_url($directory, $publicPath, $fallback));
+}
 
-    return 'static/img/placeholder.svg';
+function cover_onerror_attr(): string
+{
+    $config = app_config()['covers'] ?? [];
+    $directory = rtrim((string) ($config['directory'] ?? dirname(__DIR__) . '/covers'), "/\\");
+    $publicPath = trim(str_replace('\\', '/', (string) ($config['public_path'] ?? 'covers')), '/');
+    $fallback = basename(str_replace('\\', '/', (string) ($config['fallback'] ?? ($config['placeholder'] ?? 'logo.png'))));
+    if ($fallback === '' || $fallback === '.' || $fallback === '..') {
+        $fallback = 'logo.png';
+    }
+    $fallbackUrl = h(cover_fallback_url($directory, $publicPath, $fallback));
+    return ' onerror="this.onerror=null;this.src=\'' . $fallbackUrl . '\'"';
+}
+
+function cover_fallback_url(string $directory, string $publicPath, string $fallback): string
+{
+    static $fallbackCache = [];
+    $key = $directory . "\0" . $publicPath . "\0" . $fallback;
+    if (array_key_exists($key, $fallbackCache)) {
+        return $fallbackCache[$key];
+    }
+    $fallbackPath = $directory . '/' . $fallback;
+    if (cover_file_is_valid($fallbackPath, $directory, $fallback)) {
+        return $fallbackCache[$key] = cover_public_url($publicPath, rawurlencode($fallback));
+    }
+    return $fallbackCache[$key] = 'static/img/placeholder.svg';
 }
 
 function cover_existing_relative_path(string $directory, string $subjectsDirectory, int $subjectId, ?string $localPath): ?string
@@ -86,38 +108,41 @@ function cover_safe_relative_path(int $subjectId, string $path, string $subjects
 
 function cover_file_is_valid(string $path, ?string $coversDirectory = null, ?string $relativePath = null): bool
 {
-    if (!is_file($path) || filesize($path) < 32) {
-        return false;
-    }
-    if ($coversDirectory !== null) {
-        $coverRoot = realpath($coversDirectory);
-        $real = realpath($path);
-        if ($coverRoot === false || $real === false || !str_starts_with($real, rtrim($coverRoot, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR)) {
-            return false;
-        }
+    static $fileCache = [];
+    $cacheKey = $path . "\0" . (string) $coversDirectory . "\0" . (string) $relativePath;
+    if (array_key_exists($cacheKey, $fileCache)) {
+        return $fileCache[$cacheKey];
     }
 
     $extension = strtolower(pathinfo($relativePath ?? $path, PATHINFO_EXTENSION));
     if ($extension === 'jpeg') {
         $extension = 'jpg';
     }
-    $expectedByExtension = ['jpg' => 'image/jpeg', 'png' => 'image/png', 'webp' => 'image/webp'];
-    if (!isset($expectedByExtension[$extension])) {
-        return false;
+    if (!in_array($extension, ['jpg', 'png', 'webp'], true)) {
+        return $fileCache[$cacheKey] = false;
     }
 
-    $finfo = new finfo(FILEINFO_MIME_TYPE);
-    $mime = $finfo->file($path);
-    if ($mime !== $expectedByExtension[$extension]) {
-        return false;
+    if (!is_file($path) || filesize($path) <= 0) {
+        return $fileCache[$cacheKey] = false;
+    }
+    if ($coversDirectory !== null) {
+        $coverRoot = cover_cached_realpath($coversDirectory);
+        $real = realpath($path);
+        if ($coverRoot === false || $real === false || !str_starts_with($real, rtrim($coverRoot, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR)) {
+            return $fileCache[$cacheKey] = false;
+        }
     }
 
-    $size = @getimagesize($path);
-    if (!is_array($size) || ($size[0] ?? 0) <= 0 || ($size[1] ?? 0) <= 0) {
-        return false;
+    return $fileCache[$cacheKey] = true;
+}
+
+function cover_cached_realpath(string $path): string|false
+{
+    static $realpathCache = [];
+    if (!array_key_exists($path, $realpathCache)) {
+        $realpathCache[$path] = realpath($path);
     }
-    $mimeFromImage = $size['mime'] ?? null;
-    return $mimeFromImage === $expectedByExtension[$extension];
+    return $realpathCache[$path];
 }
 
 function cover_public_url(string $publicPath, string $relativePath): string

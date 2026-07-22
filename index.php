@@ -35,7 +35,7 @@ require __DIR__ . '/templates/header.php';
 <div class="grid">
 <?php foreach ($items as $item): ?>
     <article class="card">
-        <a href="subject.php?id=<?= (int) $item['id'] ?>"><img src="<?= cover_url((int) $item['id'], $item['cover_local_path'] ?? null) ?>" alt=""></a>
+        <a href="subject.php?id=<?= (int) $item['id'] ?>"><img src="<?= cover_url((int) $item['id'], $item['cover_local_path'] ?? null) ?>" alt=""<?= cover_onerror_attr() ?>></a>
         <h2><a href="subject.php?id=<?= (int) $item['id'] ?>"><?= h($item['name_cn'] ?: $item['name']) ?></a></h2>
         <p><?= h($item['name']) ?></p>
         <p><?= h(subject_year($item['date'])) ?> · 评分 <?= h($item['score'] ?? '暂无') ?></p>

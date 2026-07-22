@@ -117,3 +117,21 @@ def test_versioned_local_filename_for_same_remote_name_different_sha():
     assert "--' . substr($meta['sha256'], 0, 12)" in apply_block
     assert "$existingSha === $meta['sha256']" in apply_block
     assert "(?:--[a-f0-9]{12})?" in CLI
+
+
+def test_api_and_image_request_headers_are_isolated():
+    assert "function api_request_headers" in CLI
+    assert "Authorization: Bearer" in CLI[CLI.index("function api_request_headers"):CLI.index("function image_request_headers")]
+    image_headers = CLI[CLI.index("function image_request_headers"):CLI.index("function http_request")]
+    assert "Authorization: Bearer" not in image_headers
+    assert "If-None-Match" not in image_headers  # conditional headers are passed through, not hard-coded
+    assert "array_merge" in image_headers and "$conditionalHeaders" in image_headers
+    assert "image/avif" not in image_headers
+    assert "image/webp,image/png,image/jpeg" in image_headers
+
+
+def test_image_download_rejects_invalid_url_scheme_and_uses_image_headers():
+    download_block = CLI[CLI.index("function download_image_to_tmp"):CLI.index("function upsert_observed")]
+    assert "parse_url($url, PHP_URL_SCHEME)" in download_block
+    assert "invalid image URL scheme" in download_block
+    assert "image_request_headers($conditionalHeaders)" in download_block

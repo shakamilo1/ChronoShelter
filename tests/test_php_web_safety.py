@@ -87,3 +87,32 @@ def test_install_check_requires_homepage_pagination_indexes():
     assert "idx_subjects_type_score_id" in install
     assert "index_exists" in check
     assert "004_add_subjects_pagination_indexes.sql" in check
+
+
+def test_web_cover_hot_path_avoids_deep_image_validation_and_caches_checks():
+    image = (ROOT / "includes" / "image.php").read_text(encoding="utf-8")
+
+    assert "new finfo" not in image
+    assert "finfo_file" not in image
+    assert "getimagesize" not in image
+    assert "hash_file" not in image
+    assert "file_get_contents(" not in image
+    assert "static $fileCache" in image
+    assert "function cover_cached_realpath" in image
+    assert "static $realpathCache" in image
+    assert "static $fallbackCache" in image
+    assert "filesize($path) <= 0" in image
+
+
+def test_web_cover_path_safety_and_local_onerror_fallback():
+    image = (ROOT / "includes" / "image.php").read_text(encoding="utf-8")
+    pages = "\n".join((ROOT / path).read_text(encoding="utf-8") for path in ["index.php", "collection.php", "subject.php"])
+
+    assert "str_contains($path, '..')" in image
+    assert "cover_partition_prefix($subjectId" in image
+    assert "str_starts_with($real, rtrim($coverRoot" in image
+    assert "(?:--[a-f0-9]{12})?" in image
+    assert "this.onerror=null" in image
+    assert "cover_onerror_attr()" in pages
+    assert "api.bgm.tv" not in image + pages
+    assert "lain.bgm.tv" not in image + pages

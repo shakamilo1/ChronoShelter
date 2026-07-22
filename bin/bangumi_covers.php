@@ -180,17 +180,22 @@ function cover_absolute_path(string $relativePath): string
     return cover_sync_paths()['covers'] . '/' . $relativePath;
 }
 
-function request_headers(array $extra = [], string $accept = 'application/json'): array
+function api_request_headers(): array
 {
-    $headers = ['User-Agent: ' . BANGUMI_COVER_USER_AGENT, 'Accept: ' . $accept];
+    $headers = ['User-Agent: ' . BANGUMI_COVER_USER_AGENT, 'Accept: application/json'];
     $token = getenv('BANGUMI_ACCESS_TOKEN') ?: '';
     if ($token !== '') {
         $headers[] = 'Authorization: Bearer ' . $token;
     }
-    foreach ($extra as $header) {
-        $headers[] = $header;
-    }
     return $headers;
+}
+
+function image_request_headers(array $conditionalHeaders = []): array
+{
+    return array_merge([
+        'User-Agent: ' . BANGUMI_COVER_USER_AGENT,
+        'Accept: image/webp,image/png,image/jpeg,*/*;q=0.8',
+    ], $conditionalHeaders);
 }
 
 function http_request(string $url, array $headers, int $timeout = 30, int $maxRetries = 3): array
@@ -234,7 +239,7 @@ function fetch_subject_page(int $offset): array
         throw new InvalidArgumentException('Bangumi API offset must be non-negative');
     }
     $url = BANGUMI_SUBJECTS_API . '?type=' . SUBJECT_TYPE_ANIME . '&limit=' . PAGE_LIMIT . '&offset=' . $offset;
-    $response = http_request($url, request_headers([], 'application/json'));
+    $response = http_request($url, api_request_headers());
     if (($response['status'] ?? 0) !== 200) {
         throw new RuntimeException('Bangumi API failed: HTTP ' . ($response['status'] ?? 0));
     }
@@ -320,7 +325,11 @@ function download_image_to_tmp(int $subjectId, string $url, array $conditionalHe
 {
     $tmp = cover_sync_paths()['tmp'] . '/' . $subjectId . '.part';
     @unlink($tmp);
-    $response = http_request($url, request_headers($conditionalHeaders, 'image/avif,image/webp,image/png,image/jpeg,*/*;q=0.8'), 45);
+    $scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
+    if (!in_array($scheme, ['http', 'https'], true)) {
+        throw new RuntimeException('invalid image URL scheme');
+    }
+    $response = http_request($url, image_request_headers($conditionalHeaders), 45);
     if (($response['status'] ?? 0) === 304) {
         return ['not_modified' => true, 'headers' => $response['headers'] ?? []];
     }
