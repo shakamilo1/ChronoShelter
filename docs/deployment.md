@@ -202,25 +202,32 @@ data/
 └── logs/              # 离线工具日志
 ```
 
-## 12. 封面批量下载
+## 12. 动画封面离线同步
 
-安装离线工具依赖：
+网页请求不会下载 Bangumi 封面，也不会访问 `api.bgm.tv` 或 `lain.bgm.tv`。封面只由 PHP CLI 离线工具维护，并且固定只处理 Bangumi `type=2` 动画、批量接口 `GET /v0/subjects?type=2&limit=100&offset=...`、`images.large`。旧的 Python 单条目封面下载脚本已经禁用，避免误用 `/v0/subjects/{id}/image` 或远程默认图。
 
-```bash
-python -m pip install PyMySQL Pillow
-```
-
-运行：
+小规模验证（不会启动完整下载）：
 
 ```bash
-python tools/download_covers.py --missing --limit 500 --delay 3
+php bin/bangumi_covers.php sync --max-pages=1 --max-items=10 --dry-run
 ```
 
-失败日志位于：
+首次全量下载或中断恢复（只在已明确决定执行全量同步的维护机器上运行）：
 
-```text
-logs/cover_download.log
+```bash
+php bin/bangumi_covers.php sync --resume
 ```
+
+后续检查和应用更新：
+
+```bash
+php bin/bangumi_covers.php check-updates --resume
+php bin/bangumi_covers.php apply-updates --resume
+php bin/bangumi_covers.php retry-failed
+php bin/bangumi_covers.php deep-check --sample=100
+```
+
+运行数据在非公开目录 `var/cover-sync/`，正式图片在 `covers/subjects/`。正式服务器只需要部署/同步 `covers/subjects/`，并确保本地存在 `covers/logo.png`；如果网站依赖数据库中的 `cover_cache.local_path` 加速列表查询，也同步主库中的相对路径记录，单独的 `var/cover-sync/covers.sqlite` 可只保留在维护机器。详见 `docs/bangumi_cover_sync.md`。
 
 ## 13. 索引兼容性说明
 

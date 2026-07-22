@@ -3,13 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from struct import unpack
-from urllib.error import URLError
-from urllib.request import Request, urlopen
 
 MEDIA_ROOT = Path(__file__).resolve().parents[1] / "media" / "covers"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-IMAGE_API = "https://api.bgm.tv/v0/subjects/{subject_id}/image?type={image_type}"
-REJECTED_URLS = {"https://lain.bgm.tv/img/no_icon_subject.png"}
 MIN_IMAGE_BYTES = 128
 
 
@@ -75,7 +71,15 @@ def detect_image_size(data: bytes) -> tuple[int, int] | None:
     return _png_size(data) or _jpeg_size(data)
 
 
-def cache_cover_with_metadata(subject_id: int, image_type: str = "large", media_root: Path = MEDIA_ROOT, timeout: int = 20) -> CoverCacheResult:
+def cache_cover_with_metadata(subject_id: int, image_type: str = "large", media_root: Path = MEDIA_ROOT, timeout: int = 20) -> CoverCacheResult:  # noqa: ARG001
+    """Return metadata for an existing local cover without network access.
+
+    The historical importer helper used Bangumi's per-subject image endpoint.
+    Runtime and importer code must no longer download covers this way; use
+    ``php bin/bangumi_covers.php sync --resume`` on a maintenance machine.
+    This function is kept only for callers/tests that need to validate an
+    already-present local file.
+    """
     path = cover_path(subject_id, media_root)
     if path.exists() and path.stat().st_size > 0:
         data = path.read_bytes()
@@ -90,31 +94,12 @@ def cache_cover_with_metadata(subject_id: int, image_type: str = "large", media_
             width=size[0] if size else None,
             height=size[1] if size else None,
         )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    url = IMAGE_API.format(subject_id=subject_id, image_type=image_type)
-    try:
-        req = Request(url, headers={"User-Agent": "ChronoShelter/1.0"})
-        with urlopen(req, timeout=timeout) as response:  # noqa: S310 - fixed Bangumi image API
-            http_status = getattr(response, "status", None)
-            final_url = response.geturl()
-            content_type = response.headers.get("Content-Type", "")
-            data = response.read()
-    except (OSError, URLError, TimeoutError) as exc:
-        return CoverCacheResult(subject_id=subject_id, ok=False, error=str(exc))
-
-    if http_status != 200:
-        return CoverCacheResult(subject_id=subject_id, ok=False, http_status=http_status, content_type=content_type, error="unexpected HTTP status")
-    if final_url in REJECTED_URLS:
-        return CoverCacheResult(subject_id=subject_id, ok=False, http_status=http_status, content_type=content_type, error="rejected no-icon placeholder")
-    if not content_type.lower().startswith("image/"):
-        return CoverCacheResult(subject_id=subject_id, ok=False, http_status=http_status, content_type=content_type, file_size=len(data), error="unexpected content type")
-    if len(data) < MIN_IMAGE_BYTES:
-        return CoverCacheResult(subject_id=subject_id, ok=False, http_status=http_status, content_type=content_type, file_size=len(data), error="image file too small")
-    size = detect_image_size(data)
-    if not size:
-        return CoverCacheResult(subject_id=subject_id, ok=False, http_status=http_status, content_type=content_type, file_size=len(data), error="cannot detect image dimensions")
-    path.write_bytes(data)
-    return CoverCacheResult(subject_id=subject_id, ok=True, local_path=_display_path(path), status="cached", http_status=http_status, content_type=content_type, file_size=len(data), width=size[0], height=size[1])
+    return CoverCacheResult(
+        subject_id=subject_id,
+        ok=False,
+        status="disabled",
+        error="online cover downloads are disabled; use php bin/bangumi_covers.php sync --resume",
+    )
 
 
 def cache_cover(subject_id: int, image_type: str = "large", media_root: Path = MEDIA_ROOT, timeout: int = 20) -> str | None:
