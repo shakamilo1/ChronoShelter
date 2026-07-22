@@ -26,7 +26,7 @@ ChronoShelter/
 │   ├── css/
 │   ├── js/
 │   └── img/
-├── covers/                # 本地缓存封面：covers/subjects/{分片}/{subject_id}.{ext}
+├── covers/                # 本地缓存封面：covers/subjects/{level1}/{level2}/{safe_remote_filename}
 ├── data/                  # Archive 输入、处理结果与离线日志
 ├── database/              # 新部署初始化 schema
 ├── docs/                  # 部署与维护文档
@@ -181,7 +181,7 @@ CHRONOSHELTER_LIBRARY_DB_NAME=chrono_library
 网页请求只读取本地目录中的封面：
 
 ```text
-covers/subjects/{level1}/{level2}/{subject_id}.{ext}
+covers/subjects/{level1}/{level2}/{subject_id}_{BangumiSuffix}.{ext}
 ```
 
 本地占位图在 `config/config.php` 中配置：
@@ -195,7 +195,7 @@ covers/subjects/{level1}/{level2}/{subject_id}.{ext}
 ],
 ```
 
-页面优先显示分片目录中的本地封面，扩展名由真实图片格式决定并支持 `jpg`、`png`、`webp`，例如 `covers/subjects/000/491/491569.jpg`；条目封面不存在、为空或损坏时立即显示 `covers/logo.png`。如果配置的占位图也不存在，则退回 `static/img/placeholder.svg`。PHP 页面不会访问 Bangumi、不会在渲染期间下载封面，也不会因为外部站点不可达而等待超时。
+页面只显示数据库 `cover_cache.local_path` 指向的本地封面，文件名来自 `images.large` URL 的安全 basename（同一 subject 可能先后出现多个文件名），扩展名由真实图片格式决定并支持 `jpg`、`png`、`webp`，例如 `covers/subjects/000/491/491569_xxxxx.jpg`；条目封面不存在、为空或损坏时立即显示 `covers/logo.png`。如果配置的占位图也不存在，则退回 `static/img/placeholder.svg`。PHP 页面不会访问 Bangumi、不会在渲染期间下载封面，也不会因为外部站点不可达而等待超时。
 
 动画封面只通过 PHP CLI 离线同步工具维护，详见 [`docs/bangumi_cover_sync.md`](docs/bangumi_cover_sync.md)。需要补充条目封面时，应在能够访问 Bangumi 的独立维护环境中运行 `php bin/bangumi_covers.php sync --resume`，再把 `covers/subjects/` 同步到 NAS，并在 NAS 本地准备 `covers/logo.png`；不要从网页请求触发下载。
 

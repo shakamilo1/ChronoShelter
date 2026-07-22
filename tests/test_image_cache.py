@@ -3,9 +3,9 @@ import base64
 from importer.image_cache import (
     cache_cover,
     cache_cover_with_metadata,
-    cover_candidate_paths,
     cover_path,
     detect_image_size,
+    safe_relative_path,
 )
 
 PNG_1X1 = (
@@ -23,8 +23,8 @@ JPEG_3X2 = bytes.fromhex(
 WEBP_1X1 = base64.b64decode("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA")
 
 
-def write_partitioned(media_root, subject_id, extension, data):
-    path = cover_candidate_paths(subject_id, media_root)[{"jpg": 0, "png": 1, "webp": 2}[extension]]
+def write_explicit(media_root, local_path, data):
+    path = media_root / local_path
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     return path
@@ -42,35 +42,38 @@ def test_detect_webp_size():
     assert detect_image_size(WEBP_1X1) == (1, 1)
 
 
-def test_cache_cover_finds_partitioned_jpeg(tmp_path):
+def test_cache_cover_validates_explicit_partitioned_jpeg(tmp_path):
     covers = tmp_path / "covers"
-    expected = write_partitioned(covers, 1424, "jpg", JPEG_3X2)
+    local_path = "subjects/000/001/1424_Ewjo.jpg"
+    expected = write_explicit(covers, local_path, JPEG_3X2)
 
-    result = cache_cover_with_metadata(1424, media_root=covers)
+    result = cache_cover_with_metadata(1424, media_root=covers, local_path=local_path)
 
     assert result.ok is True
     assert result.status == "cached"
     assert result.local_path == str(expected)
     assert (result.width, result.height) == (3, 2)
-    assert cache_cover(1424, media_root=covers) == str(expected)
+    assert cache_cover(1424, media_root=covers, local_path=local_path) == str(expected)
 
 
-def test_cache_cover_finds_partitioned_png(tmp_path):
+def test_cache_cover_validates_explicit_png(tmp_path):
     covers = tmp_path / "covers"
-    expected = write_partitioned(covers, 491569, "png", PNG_1X1)
+    local_path = "subjects/000/491/491569_xxxxx.png"
+    expected = write_explicit(covers, local_path, PNG_1X1)
 
-    result = cache_cover_with_metadata(491569, media_root=covers)
+    result = cache_cover_with_metadata(491569, media_root=covers, local_path=local_path)
 
     assert result.ok is True
     assert result.local_path == str(expected)
     assert (result.width, result.height) == (1, 1)
 
 
-def test_cache_cover_finds_partitioned_webp(tmp_path):
+def test_cache_cover_validates_explicit_webp(tmp_path):
     covers = tmp_path / "covers"
-    expected = write_partitioned(covers, 491569, "webp", WEBP_1X1)
+    local_path = "subjects/000/491/491569_xxxxx.webp"
+    expected = write_explicit(covers, local_path, WEBP_1X1)
 
-    result = cache_cover_with_metadata(491569, media_root=covers)
+    result = cache_cover_with_metadata(491569, media_root=covers, local_path=local_path)
 
     assert result.ok is True
     assert result.local_path == str(expected)
@@ -79,8 +82,9 @@ def test_cache_cover_finds_partitioned_webp(tmp_path):
 
 def test_subject_over_one_million_uses_php_partition_algorithm(tmp_path):
     covers = tmp_path / "covers"
+    local_path = "subjects/001/234/1234567_xxxxx.jpg"
 
-    assert cover_path(1234567, media_root=covers) == covers / "subjects" / "001" / "234" / "1234567.jpg"
+    assert cover_path(1234567, media_root=covers, local_path=local_path) == covers / local_path
 
 
 def test_missing_cover_is_disabled_without_creating_files(tmp_path):
@@ -94,25 +98,39 @@ def test_missing_cover_is_disabled_without_creating_files(tmp_path):
     assert not covers.exists()
 
 
-def test_legacy_flat_file_is_read_only_compatible(tmp_path):
+def test_legacy_flat_file_is_read_only_when_explicitly_mapped(tmp_path):
     covers = tmp_path / "covers"
-    covers.mkdir()
-    legacy = covers / "1.jpg"
-    legacy.write_bytes(PNG_1X1 + (b"0" * 200))
+    legacy = write_explicit(covers, "1.jpg", PNG_1X1 + (b"0" * 200))
 
-    assert cache_cover(1, media_root=covers) == str(legacy)
+    assert cache_cover(1, media_root=covers, local_path="1.jpg") == str(legacy)
     assert legacy.read_bytes().startswith(PNG_1X1)
 
 
-def test_partitioned_file_takes_priority_over_legacy_flat_file(tmp_path):
+def test_partitioned_file_is_used_only_when_database_mapping_points_to_it(tmp_path):
     covers = tmp_path / "covers"
-    covers.mkdir()
-    legacy = covers / "1424.jpg"
-    legacy.write_bytes(PNG_1X1 + (b"0" * 200))
-    partitioned = write_partitioned(covers, 1424, "jpg", JPEG_3X2)
+    legacy = write_explicit(covers, "1424.jpg", PNG_1X1 + (b"0" * 200))
+    partitioned = write_explicit(covers, "subjects/000/001/1424_Ewjo.jpg", JPEG_3X2)
 
-    result = cache_cover_with_metadata(1424, media_root=covers)
+    result = cache_cover_with_metadata(1424, media_root=covers, local_path="subjects/000/001/1424_Ewjo.jpg")
 
     assert result.ok is True
     assert result.local_path == str(partitioned)
-    assert legacy.exists()
+    assert cache_cover(1424, media_root=covers, local_path="1424.jpg") == str(legacy)
+
+
+def test_rejects_wrong_subject_prefix_and_traversal_paths():
+    bad_paths = [
+        "subjects/000/001/9999_Ewjo.jpg",
+        "subjects/000/001/1424.jpg",
+        "subjects/000/002/1424_Ewjo.jpg",
+        "subjects/000/001/1424_../Ewjo.jpg",
+        "subjects/000/001/1424_%2e%2e.jpg",
+        "../covers/1424_Ewjo.jpg",
+    ]
+    for local_path in bad_paths:
+        try:
+            safe_relative_path(1424, local_path)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"unsafe path accepted: {local_path}")

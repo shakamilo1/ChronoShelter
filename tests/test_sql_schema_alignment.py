@@ -98,3 +98,14 @@ def test_split_index_files_target_single_databases():
     assert "cover_cache" not in bangumi_sql
     assert "subjects" not in library_sql
     assert "episodes" not in library_sql
+
+
+def test_cover_cache_schema_contains_explicit_mapping_columns():
+    sql = Path("sql/create_chrono_library_tables.sql").read_text(encoding="utf-8")
+    for column in ["remote_filename", "source_url", "local_path", "content_type", "file_size", "sha256", "error", "updated_at"]:
+        assert f"`{column}`" in sql
+    assert "subjects/{level1}/{level2}/{subject_id}_{BangumiSuffix}.{ext}" in sql
+    migration = Path("sql/migrations/003_cover_cache_mapping_columns.sql").read_text(encoding="utf-8")
+    assert "ADD COLUMN IF NOT EXISTS `remote_filename`" in migration
+    assert "ADD COLUMN IF NOT EXISTS `source_url`" in migration
+    assert "ADD COLUMN IF NOT EXISTS `sha256`" in migration

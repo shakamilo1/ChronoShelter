@@ -44,6 +44,8 @@ Recommended logical fields:
 
 The PHP collection layer writes the canonical `chrono_library.collections` fields directly; legacy field-name mapping is no longer part of the web runtime.
 
+`chrono_library.cover_cache` is the web runtime's only current-cover mapping source. Web pages read `cover_cache.local_path` for `status='cached'`, validate that local file, and never guess filenames from `subject_id`. The cache row includes `remote_filename`, `source_url`, `local_path`, `content_type`, `file_size`, `sha256`, `error`, and `updated_at`; `local_path` is relative to `covers/`, for example `subjects/000/001/1234_Ewjo.jpg`.
+
 ## Inspection
 
 ```bash

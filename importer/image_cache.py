@@ -6,7 +6,6 @@ from struct import unpack
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MEDIA_ROOT = PROJECT_ROOT / "covers"
-SUPPORTED_EXTENSIONS = ("jpg", "png", "webp")
 
 
 @dataclass
@@ -30,22 +29,47 @@ def _display_path(path: Path) -> str:
         return str(path)
 
 
-def cover_partition_relative_path(subject_id: int, extension: str) -> Path:
+def cover_partition_prefix(subject_id: int) -> Path:
     level1 = f"{subject_id // 1_000_000:03d}"
     level2 = f"{(subject_id % 1_000_000) // 1_000:03d}"
-    return Path("subjects") / level1 / level2 / f"{subject_id}.{extension}"
+    return Path("subjects") / level1 / level2
 
 
-def cover_path(subject_id: int, media_root: Path = MEDIA_ROOT) -> Path:
-    """Return the preferred partitioned JPEG path for compatibility."""
-    return media_root / cover_partition_relative_path(subject_id, "jpg")
+def cover_partition_relative_path(subject_id: int, filename: str) -> Path:
+    return cover_partition_prefix(subject_id) / filename
 
 
-def cover_candidate_paths(subject_id: int, media_root: Path = MEDIA_ROOT) -> list[Path]:
-    """Return local-only cover candidates, preferring PHP sync partition paths."""
-    partitioned = [media_root / cover_partition_relative_path(subject_id, ext) for ext in SUPPORTED_EXTENSIONS]
-    legacy = [media_root / f"{subject_id}.jpg"]
-    return partitioned + legacy
+def cover_path(subject_id: int, media_root: Path = MEDIA_ROOT, local_path: str | None = None) -> Path:
+    """Resolve an explicitly supplied local_path; never guess current covers."""
+    if local_path is None:
+        raise ValueError("local_path is required")
+    return media_root / safe_relative_path(subject_id, local_path)
+
+
+def safe_relative_path(subject_id: int, local_path: str) -> Path:
+    normalized = local_path.replace("\\", "/").strip("/")
+    if normalized.startswith("covers/"):
+        normalized = normalized[len("covers/"):]
+    if not normalized or ".." in normalized or any(ord(ch) < 32 or ord(ch) == 127 for ch in normalized):
+        raise ValueError("unsafe cover local_path")
+    filename = Path(normalized).name
+    if "/" in filename or "\\" in filename:
+        raise ValueError("unsafe cover filename")
+    allowed = (".jpg", ".jpeg", ".png", ".webp")
+    if not filename.lower().endswith(allowed):
+        raise ValueError("unsupported cover extension")
+    if normalized == f"{subject_id}{Path(filename).suffix}":
+        return Path(normalized)
+    expected_prefix = str(cover_partition_prefix(subject_id)).replace("\\", "/") + "/"
+    if not normalized.startswith(expected_prefix):
+        raise ValueError("cover path shard does not match subject_id")
+    stem = Path(filename).stem
+    if not stem.startswith(f"{subject_id}_"):
+        raise ValueError("cover filename does not match subject_id")
+    suffix = stem[len(str(subject_id)) + 1:]
+    if not suffix or any(not (ch.isalnum() or ch in "_-") for ch in suffix):
+        raise ValueError("unsafe cover filename suffix")
+    return Path(normalized)
 
 
 def _jpeg_size(data: bytes) -> tuple[int, int] | None:
@@ -86,18 +110,12 @@ def _webp_size(data: bytes) -> tuple[int, int] | None:
         return None
     chunk = data[12:16]
     if chunk == b"VP8X" and len(data) >= 30:
-        width = int.from_bytes(data[24:27], "little") + 1
-        height = int.from_bytes(data[27:30], "little") + 1
-        return width, height
+        return int.from_bytes(data[24:27], "little") + 1, int.from_bytes(data[27:30], "little") + 1
     if chunk == b"VP8 " and len(data) >= 30 and data[23:26] == b"\x9d\x01\x2a":
-        width = unpack("<H", data[26:28])[0] & 0x3FFF
-        height = unpack("<H", data[28:30])[0] & 0x3FFF
-        return width, height
+        return unpack("<H", data[26:28])[0] & 0x3FFF, unpack("<H", data[28:30])[0] & 0x3FFF
     if chunk == b"VP8L" and len(data) >= 25 and data[20] == 0x2F:
         bits = int.from_bytes(data[21:25], "little")
-        width = (bits & 0x3FFF) + 1
-        height = ((bits >> 14) & 0x3FFF) + 1
-        return width, height
+        return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
     return None
 
 
@@ -105,7 +123,21 @@ def detect_image_size(data: bytes) -> tuple[int, int] | None:
     return _png_size(data) or _jpeg_size(data) or _webp_size(data)
 
 
-def _local_cover_result(subject_id: int, path: Path) -> CoverCacheResult:
+def cache_cover_with_metadata(subject_id: int, image_type: str = "large", media_root: Path = MEDIA_ROOT, timeout: int = 20, local_path: str | None = None) -> CoverCacheResult:  # noqa: ARG001
+    """Validate one explicit local_path without network access.
+
+    The current cover mapping must come from cover_cache.local_path or an export
+    manifest. This compatibility helper deliberately does not scan subject_id
+    variants to guess the current cover.
+    """
+    if local_path is None:
+        return CoverCacheResult(subject_id=subject_id, ok=False, status="disabled", error="local_path is required; use php bin/bangumi_covers.php sync --resume")
+    try:
+        path = cover_path(subject_id, media_root, local_path)
+    except ValueError as exc:
+        return CoverCacheResult(subject_id=subject_id, ok=False, status="invalid", error=str(exc))
+    if not path.exists() or path.stat().st_size <= 0:
+        return CoverCacheResult(subject_id=subject_id, ok=False, status="disabled", error="local cover file is missing; use php bin/bangumi_covers.php sync --resume")
     data = path.read_bytes()
     size = detect_image_size(data)
     return CoverCacheResult(
@@ -120,27 +152,6 @@ def _local_cover_result(subject_id: int, path: Path) -> CoverCacheResult:
     )
 
 
-def cache_cover_with_metadata(subject_id: int, image_type: str = "large", media_root: Path = MEDIA_ROOT, timeout: int = 20) -> CoverCacheResult:  # noqa: ARG001
-    """Return metadata for an existing local cover without network access.
-
-    The historical importer helper used Bangumi's per-subject image endpoint.
-    Runtime and importer code must no longer download covers this way; use
-    ``php bin/bangumi_covers.php sync --resume`` on a maintenance machine.
-    This function is kept only for callers/tests that need to validate an
-    already-present local file. It checks PHP-sync partitioned covers first and
-    then a read-only legacy flat ``{subject_id}.jpg`` file for compatibility.
-    """
-    for path in cover_candidate_paths(subject_id, media_root):
-        if path.exists() and path.stat().st_size > 0:
-            return _local_cover_result(subject_id, path)
-    return CoverCacheResult(
-        subject_id=subject_id,
-        ok=False,
-        status="disabled",
-        error="online cover downloads are disabled; use php bin/bangumi_covers.php sync --resume",
-    )
-
-
-def cache_cover(subject_id: int, image_type: str = "large", media_root: Path = MEDIA_ROOT, timeout: int = 20) -> str | None:
-    result = cache_cover_with_metadata(subject_id, image_type=image_type, media_root=media_root, timeout=timeout)
+def cache_cover(subject_id: int, image_type: str = "large", media_root: Path = MEDIA_ROOT, timeout: int = 20, local_path: str | None = None) -> str | None:
+    result = cache_cover_with_metadata(subject_id, image_type=image_type, media_root=media_root, timeout=timeout, local_path=local_path)
     return result.local_path if result.ok else None

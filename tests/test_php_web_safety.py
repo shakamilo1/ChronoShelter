@@ -9,6 +9,7 @@ def test_web_cover_resolver_never_downloads_remote_images():
     config = (ROOT / "config" / "config-example.php").read_text(encoding="utf-8")
 
     assert "file_get_contents(" not in source
+    assert "foreach (['jpg', 'png', 'webp']" not in source
     assert "cache_cover(" not in source
     assert "api.bgm.tv" not in source
     assert "api_url" not in config
@@ -51,8 +52,27 @@ def test_cover_partition_paths_are_documented_and_safe():
 
     assert "intdiv($subjectId, 1000000)" in cli
     assert "intdiv($subjectId % 1000000, 1000)" in cli
-    assert "subjects/000/491/491569.jpg" in (ROOT / "docs" / "bangumi_cover_sync.md").read_text(encoding="utf-8")
+    assert "subjects/000/491/491569_xxxxx.jpg" in (ROOT / "docs" / "bangumi_cover_sync.md").read_text(encoding="utf-8")
     assert "cover_safe_relative_path" in image
-    assert "cover_partition_relative_path" in image
+    assert "cover_partition_prefix" in image
     assert "api.bgm.tv" not in image
     assert "lain.bgm.tv" not in image
+
+
+def test_all_cover_url_calls_pass_database_local_path():
+    for relative in ["index.php", "collection.php", "subject.php"]:
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        assert "cover_url(" in source
+        assert "cover_local_path" in source
+    assert "cover_url($id)" not in (ROOT / "subject.php").read_text(encoding="utf-8")
+
+
+def test_install_check_requires_cover_cache_mapping_columns():
+    install = (ROOT / "includes" / "install.php").read_text(encoding="utf-8")
+    check = (ROOT / "install_check.php").read_text(encoding="utf-8")
+
+    assert "required_columns" in install
+    assert "remote_filename" in install
+    assert "source_url" in install
+    assert "sha256" in install
+    assert "column_exists" in check

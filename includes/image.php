@@ -5,11 +5,11 @@ declare(strict_types=1);
 require_once __DIR__ . '/database.php';
 
 /**
- * Resolve a cover URL without performing any network I/O.
+ * Resolve a cover URL from an explicit database local_path without network I/O.
  *
- * Web requests must stay usable when Bangumi is unreachable. Cover downloads
- * are an offline CLI maintenance task; a missing, unsafe, or invalid local file
- * therefore resolves to the bundled fallback immediately.
+ * Web requests must never infer a cover filename from subject_id. The current
+ * cover mapping comes from chrono_library.cover_cache.local_path; missing,
+ * unsafe, mismatched, or invalid files immediately fall back to covers/logo.png.
  */
 function cover_url(int $subjectId, ?string $localPath = null): string
 {
@@ -37,43 +37,49 @@ function cover_url(int $subjectId, ?string $localPath = null): string
 
 function cover_existing_relative_path(string $directory, string $subjectsDirectory, int $subjectId, ?string $localPath): ?string
 {
-    $candidates = [];
-    if ($localPath !== null && $localPath !== '') {
-        $safe = cover_safe_relative_path($localPath);
-        if ($safe !== null) {
-            $candidates[] = $safe;
-        }
+    if ($localPath === null || $localPath === '') {
+        return null;
     }
-    foreach (['jpg', 'png', 'webp'] as $extension) {
-        $candidates[] = cover_partition_relative_path($subjectId, $extension, $subjectsDirectory);
+    $safe = cover_safe_relative_path($subjectId, $localPath, $subjectsDirectory);
+    if ($safe === null) {
+        return null;
     }
-    foreach (array_unique($candidates) as $relativePath) {
-        if (cover_file_is_valid($directory . '/' . $relativePath)) {
-            return $relativePath;
-        }
-    }
-    return null;
+    return cover_file_is_valid($directory . '/' . $safe) ? $safe : null;
 }
 
-function cover_partition_relative_path(int $subjectId, string $extension, string $subjectsDirectory = 'subjects'): string
+function cover_partition_prefix(int $subjectId, string $subjectsDirectory = 'subjects'): string
 {
     $subjectsDirectory = trim($subjectsDirectory, '/');
     $level1 = str_pad((string) intdiv($subjectId, 1000000), 3, '0', STR_PAD_LEFT);
     $level2 = str_pad((string) intdiv($subjectId % 1000000, 1000), 3, '0', STR_PAD_LEFT);
-    return $subjectsDirectory . '/' . $level1 . '/' . $level2 . '/' . $subjectId . '.' . $extension;
+    return $subjectsDirectory . '/' . $level1 . '/' . $level2 . '/';
 }
 
-function cover_safe_relative_path(string $path): ?string
+function cover_safe_relative_path(int $subjectId, string $path, string $subjectsDirectory = 'subjects'): ?string
 {
     $path = trim(str_replace('\\', '/', $path), '/');
     if (str_starts_with($path, 'covers/')) {
         $path = substr($path, strlen('covers/'));
     }
-    if (preg_match('#^subjects/[0-9]{3,}/[0-9]{3}/[0-9]+\.(jpg|png|webp)$#', $path)) {
+    if ($path === '' || str_contains($path, '..') || preg_match('/[\\x00-\\x1F\\x7F]/', $path)) {
+        return null;
+    }
+
+    $quotedSubjects = preg_quote(trim($subjectsDirectory, '/'), '#');
+    $quotedPrefix = preg_quote(cover_partition_prefix($subjectId, $subjectsDirectory), '#');
+    $namePattern = $subjectId . '_(?:[A-Za-z0-9_-]+)\\.(?:jpg|jpeg|png|webp)';
+    if (preg_match('#^' . $quotedPrefix . '(' . $namePattern . ')$#i', $path)) {
         return $path;
     }
-    if (preg_match('#^[0-9]+\.jpg$#', $path)) {
+
+    // Read-only compatibility for explicit legacy database mappings only.
+    if (preg_match('#^' . $subjectId . '\\.(?:jpg|jpeg|png|webp)$#i', $path)) {
         return $path;
+    }
+
+    // Reject files in the right tree but wrong shard, wrong subject prefix, or guessed names.
+    if (preg_match('#^' . $quotedSubjects . '/#', $path)) {
+        return null;
     }
     return null;
 }

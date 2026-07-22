@@ -28,7 +28,12 @@ function count_anime(): int
 
 function get_subject(int $id): ?array
 {
-    $stmt = db_public()->prepare('SELECT * FROM subjects WHERE id = :id AND type = 2');
+    $libraryDb = db_identifier(library_database_name());
+    $sql = 'SELECT s.*, cc.local_path AS cover_local_path
+            FROM subjects s
+            LEFT JOIN ' . $libraryDb . '.cover_cache cc ON cc.subject_id = s.id AND cc.status = \'cached\'
+            WHERE s.id = :id AND s.type = 2';
+    $stmt = db_public()->prepare($sql);
     $stmt->execute(['id' => $id]);
     $subject = $stmt->fetch();
     return $subject ?: null;

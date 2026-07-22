@@ -11,9 +11,10 @@ def test_placeholder_points_to_php_offline_sync_not_python_cache():
     assert "php bin/bangumi_covers.php sync --resume" in text
 
 
-def test_readme_uses_partitioned_cover_path_not_old_flat_path():
+def test_readme_uses_remote_filename_partitioned_cover_path_not_old_flat_path():
     text = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "covers/{subject_id}.jpg" not in text
-    assert "covers/subjects/{level1}/{level2}/{subject_id}.{ext}" in text
+    assert "covers/subjects/{level1}/{level2}/{subject_id}_{BangumiSuffix}.{ext}" in text
+    assert "cover_cache.local_path" in text
     assert "jpg" in text and "png" in text and "webp" in text

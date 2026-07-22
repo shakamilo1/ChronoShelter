@@ -7,7 +7,7 @@ const BANGUMI_COVER_USER_AGENT = 'shakamilo1/chronoshelter-cover-archive/1.0';
 const BANGUMI_SUBJECTS_API = 'https://api.bgm.tv/v0/subjects';
 const SUBJECT_TYPE_ANIME = 2;
 const PAGE_LIMIT = 100;
-const STATUSES = ['pending', 'downloading', 'downloaded', 'unchanged', 'pending_update', 'no_cover', 'remote_missing', 'failed'];
+const STATUSES = ['pending', 'downloading', 'downloaded', 'unchanged', 'pending_update', 'no_cover', 'remote_missing', 'failed', 'mapping_failed', 'pending_deploy'];
 
 $root = dirname(__DIR__);
 require_once $root . '/includes/database.php';
@@ -31,6 +31,7 @@ function cli_options(array $argv): array
         'all' => false,
         'confirm-all' => false,
         'prune-remote-missing' => false,
+        'file' => null,
     ];
     for ($i = 2; $i < count($argv); $i++) {
         $arg = $argv[$i];
@@ -45,8 +46,10 @@ function cli_options(array $argv): array
         }
         if (is_bool($options[$key])) {
             $options[$key] = $value === null ? true : filter_var($value, FILTER_VALIDATE_BOOLEAN);
-        } elseif (is_int($options[$key]) || in_array($key, ['max-pages', 'max-items', 'subject-id', 'sample'], true)) {
+        } elseif (in_array($key, ['max-pages', 'max-items', 'subject-id', 'sample'], true)) {
             $options[$key] = $value === null ? null : max(0, (int) $value);
+        } elseif ($key === 'file') {
+            $options[$key] = $value;
         } else {
             $options[$key] = $value === null ? $options[$key] : (float) $value;
         }
@@ -101,6 +104,7 @@ function db(): PDO
         subject_type INTEGER NOT NULL DEFAULT 2,
         downloaded_url TEXT NULL,
         observed_url TEXT NULL,
+        remote_filename TEXT NULL,
         relative_path TEXT NULL,
         mime_type TEXT NULL,
         file_extension TEXT NULL,
@@ -115,6 +119,11 @@ function db(): PDO
         retry_count INTEGER NOT NULL DEFAULT 0,
         error_message TEXT NULL
     )');
+    try {
+        $pdo->exec('ALTER TABLE cover_manifest ADD COLUMN remote_filename TEXT NULL');
+    } catch (Throwable) {
+        // Column already exists.
+    }
     $pdo->exec('CREATE TABLE IF NOT EXISTS sync_runs (
         run_id TEXT PRIMARY KEY,
         run_type TEXT NOT NULL,
@@ -128,19 +137,42 @@ function db(): PDO
     return $pdo;
 }
 
-function cover_relative_path(int $subjectId, string $extension): string
+function cover_partition_prefix(int $subjectId): string
 {
-    if ($subjectId <= 0 || !preg_match('/^[a-z0-9]+$/', $extension)) {
-        throw new InvalidArgumentException('invalid cover path input');
-    }
     $level1 = str_pad((string) intdiv($subjectId, 1000000), 3, '0', STR_PAD_LEFT);
     $level2 = str_pad((string) intdiv($subjectId % 1000000, 1000), 3, '0', STR_PAD_LEFT);
-    return 'subjects/' . $level1 . '/' . $level2 . '/' . $subjectId . '.' . $extension;
+    return 'subjects/' . $level1 . '/' . $level2 . '/';
+}
+
+function safe_remote_filename(int $subjectId, string $url, string $detectedExtension): string
+{
+    $path = parse_url($url, PHP_URL_PATH);
+    $basename = is_string($path) ? rawurldecode(basename($path)) : '';
+    if (preg_match('/[\\\/]|\.\.|[\x00-\x1F\x7F]/', $basename)) {
+        $basename = '';
+    }
+    if (preg_match('/^' . preg_quote((string) $subjectId, '/') . '_[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$/i', $basename, $m)) {
+        $ext = strtolower($m[1]) === 'jpeg' ? 'jpg' : strtolower($m[1]);
+        if ($ext === $detectedExtension) {
+            return $basename;
+        }
+        throw new RuntimeException('remote filename extension does not match detected image type');
+    }
+    return $subjectId . '_' . substr(hash('sha256', $url), 0, 12) . '.' . $detectedExtension;
+}
+
+function cover_relative_path(int $subjectId, string $filename): string
+{
+    if ($subjectId <= 0 || !preg_match('/^' . preg_quote((string) $subjectId, '/') . '_[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$/i', $filename)) {
+        throw new InvalidArgumentException('invalid cover filename');
+    }
+    return cover_partition_prefix($subjectId) . $filename;
 }
 
 function cover_absolute_path(string $relativePath): string
 {
-    if (!preg_match('#^subjects/[0-9]{3,}/[0-9]{3}/[0-9]+\.(jpg|png|webp)$#', $relativePath)) {
+    if (!preg_match('#^subjects/[0-9]{3,}/[0-9]{3}/[0-9]+_[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$#i', $relativePath)
+        && !preg_match('#^[0-9]+\.(jpg|jpeg|png|webp)$#i', $relativePath)) {
         throw new InvalidArgumentException('unsafe relative cover path');
     }
     return cover_sync_paths()['covers'] . '/' . $relativePath;
@@ -322,7 +354,8 @@ function apply_one(int $subjectId, bool $dryRun = false): bool
     $oldPath = $row['relative_path'] ?? null;
     try {
         $meta = download_image_to_tmp($subjectId, $row['observed_url']);
-        $relative = cover_relative_path($subjectId, $meta['extension']);
+        $remoteFilename = safe_remote_filename($subjectId, (string) $row['observed_url'], $meta['extension']);
+        $relative = cover_relative_path($subjectId, $remoteFilename);
         $target = cover_absolute_path($relative);
         $targetDir = dirname($target);
         if (!is_dir($targetDir) && !mkdir($targetDir, 0775, true) && !is_dir($targetDir)) {
@@ -331,34 +364,53 @@ function apply_one(int $subjectId, bool $dryRun = false): bool
         if (!rename($meta['tmp_path'], $target)) {
             throw new RuntimeException('cannot move cover atomically');
         }
-        $stmt = db()->prepare('UPDATE cover_manifest SET downloaded_url = observed_url, relative_path = :path, mime_type = :mime,
+        $stmt = db()->prepare('UPDATE cover_manifest SET downloaded_url = observed_url, remote_filename = :remote_filename, relative_path = :path, mime_type = :mime,
             file_extension = :ext, file_size = :size, sha256 = :sha, etag = :etag, last_modified = :lm,
             last_downloaded_at = :downloaded, last_checked_at = :checked, status = \'downloaded\', error_message = NULL WHERE subject_id = :id');
-        $stmt->execute(['path' => $relative, 'mime' => $meta['mime_type'], 'ext' => $meta['extension'], 'size' => $meta['file_size'], 'sha' => $meta['sha256'], 'etag' => $meta['etag'], 'lm' => $meta['last_modified'], 'downloaded' => now_utc(), 'checked' => now_utc(), 'id' => $subjectId]);
+        $stmt->execute(['remote_filename' => $remoteFilename, 'path' => $relative, 'mime' => $meta['mime_type'], 'ext' => $meta['extension'], 'size' => $meta['file_size'], 'sha' => $meta['sha256'], 'etag' => $meta['etag'], 'lm' => $meta['last_modified'], 'downloaded' => now_utc(), 'checked' => now_utc(), 'id' => $subjectId]);
+        try {
+            sync_mysql_cover_cache($subjectId, 'cached', $remoteFilename, (string) $row['observed_url'], $relative, null, $meta);
+        } catch (Throwable $mappingError) {
+            db()->prepare("UPDATE cover_manifest SET status = 'mapping_failed', error_message = :error, last_checked_at = :checked WHERE subject_id = :id")
+                ->execute(['error' => mb_substr('cover_cache mapping failed: ' . $mappingError->getMessage(), 0, 1000), 'checked' => now_utc(), 'id' => $subjectId]);
+            return false;
+        }
         if ($oldPath && $oldPath !== $relative) {
             $oldAbsolute = cover_absolute_path($oldPath);
             if (is_file($oldAbsolute)) @unlink($oldAbsolute);
         }
-        sync_mysql_cover_cache($subjectId, 'cached', $relative, null, $meta);
         return true;
     } catch (Throwable $exc) {
         mark_failed($subjectId, $exc->getMessage());
-        sync_mysql_cover_cache($subjectId, 'failed', $oldPath, $exc->getMessage(), []);
+        try {
+            sync_mysql_cover_cache($subjectId, 'failed', $row['remote_filename'] ?? null, $row['observed_url'] ?? null, $oldPath, $exc->getMessage(), []);
+        } catch (Throwable $mappingError) {
+            db()->prepare('UPDATE cover_manifest SET error_message = :error, last_checked_at = :checked WHERE subject_id = :id')
+                ->execute(['error' => mb_substr($exc->getMessage() . '; cover_cache failure mapping failed: ' . $mappingError->getMessage(), 0, 1000), 'checked' => now_utc(), 'id' => $subjectId]);
+        }
         return false;
     }
 }
 
-function sync_mysql_cover_cache(int $subjectId, string $status, ?string $relativePath, ?string $error, array $meta): void
+function sync_mysql_cover_cache(int $subjectId, string $status, ?string $remoteFilename, ?string $sourceUrl, ?string $relativePath, ?string $error, array $meta): void
 {
-    try {
-        $pdo = db_library();
-        $stmt = $pdo->prepare('INSERT INTO cover_cache (subject_id, status, local_path, error, content_type, file_size)
-            VALUES (:id, :status, :path, :error, :content_type, :file_size)
-            ON DUPLICATE KEY UPDATE status = VALUES(status), local_path = VALUES(local_path), error = VALUES(error), content_type = VALUES(content_type), file_size = VALUES(file_size), updated_at = CURRENT_TIMESTAMP');
-        $stmt->execute(['id' => $subjectId, 'status' => $status, 'path' => $relativePath, 'error' => $error, 'content_type' => $meta['mime_type'] ?? null, 'file_size' => $meta['file_size'] ?? null]);
-    } catch (Throwable) {
-        // MySQL cache is optional for the offline sync manifest; the web layer can also resolve partitioned files directly.
-    }
+    $pdo = db_library();
+    $stmt = $pdo->prepare('INSERT INTO cover_cache (subject_id, status, remote_filename, source_url, local_path, error, content_type, file_size, sha256)
+        VALUES (:id, :status, :remote_filename, :source_url, :path, :error, :content_type, :file_size, :sha256)
+        ON DUPLICATE KEY UPDATE status = VALUES(status), remote_filename = VALUES(remote_filename), source_url = VALUES(source_url),
+            local_path = VALUES(local_path), error = VALUES(error), content_type = VALUES(content_type), file_size = VALUES(file_size),
+            sha256 = VALUES(sha256), updated_at = CURRENT_TIMESTAMP');
+    $stmt->execute([
+        'id' => $subjectId,
+        'status' => $status,
+        'remote_filename' => $remoteFilename,
+        'source_url' => $sourceUrl,
+        'path' => $relativePath,
+        'error' => $error,
+        'content_type' => $meta['mime_type'] ?? null,
+        'file_size' => $meta['file_size'] ?? null,
+        'sha256' => $meta['sha256'] ?? null,
+    ]);
 }
 
 function current_run(string $type, bool $resume): array
@@ -478,7 +530,7 @@ function apply_updates(array $options): array
 
 function retry_failed(array $options): array
 {
-    db()->exec("UPDATE cover_manifest SET status = CASE WHEN downloaded_url IS NULL THEN 'pending' ELSE 'pending_update' END WHERE subject_type = 2 AND status = 'failed'");
+    db()->exec("UPDATE cover_manifest SET status = CASE WHEN downloaded_url IS NULL THEN 'pending' ELSE 'pending_update' END WHERE subject_type = 2 AND status IN ('failed','mapping_failed')");
     return apply_updates($options);
 }
 
@@ -548,6 +600,71 @@ function deep_check(array $options): array
     return $stats;
 }
 
+function export_mapping(array $options): array
+{
+    $stats = stats_template('export-mapping');
+    $file = $options['file'] ?: (cover_sync_paths()['reports'] . '/cover-mapping-' . gmdate('Y-m-d-His') . '.jsonl');
+    $dir = dirname((string) $file);
+    if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+        throw new RuntimeException('cannot create export directory');
+    }
+    $rows = db()->query("SELECT subject_id, CASE WHEN status IN ('downloaded','unchanged') THEN 'cached' ELSE status END AS status, remote_filename, downloaded_url AS source_url, relative_path AS local_path, mime_type AS content_type, file_size, sha256, COALESCE(last_downloaded_at, last_checked_at) AS updated_at FROM cover_manifest WHERE subject_type = 2 AND relative_path IS NOT NULL ORDER BY subject_id")->fetchAll(PDO::FETCH_ASSOC);
+    $handle = fopen((string) $file, 'wb');
+    if ($handle === false) {
+        throw new RuntimeException('cannot open export file');
+    }
+    foreach ($rows as $row) {
+        fwrite($handle, json_encode($row, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
+        $stats['scanned_anime']++;
+    }
+    fclose($handle);
+    echo "mapping_export_file: {$file}\n";
+    $stats['complete'] = true;
+    $stats['manifest_records'] = (int) db()->query('SELECT COUNT(*) FROM cover_manifest')->fetchColumn();
+    return $stats;
+}
+
+function import_mapping(array $options): array
+{
+    $stats = stats_template('import-mapping');
+    $file = $options['file'];
+    if (!$file || !is_file((string) $file)) {
+        throw new RuntimeException('--file is required for import-mapping');
+    }
+    $handle = fopen((string) $file, 'rb');
+    if ($handle === false) {
+        throw new RuntimeException('cannot open mapping file');
+    }
+    $pdo = db_library();
+    $stmt = $pdo->prepare('INSERT INTO cover_cache (subject_id, status, remote_filename, source_url, local_path, content_type, file_size, sha256, updated_at)
+        VALUES (:subject_id, :status, :remote_filename, :source_url, :local_path, :content_type, :file_size, :sha256, COALESCE(:updated_at, CURRENT_TIMESTAMP))
+        ON DUPLICATE KEY UPDATE status = VALUES(status), remote_filename = VALUES(remote_filename), source_url = VALUES(source_url),
+            local_path = VALUES(local_path), content_type = VALUES(content_type), file_size = VALUES(file_size), sha256 = VALUES(sha256), updated_at = VALUES(updated_at)');
+    while (($line = fgets($handle)) !== false) {
+        $line = trim($line);
+        if ($line === '') continue;
+        $row = json_decode($line, true);
+        if (!is_array($row)) {
+            throw new RuntimeException('invalid mapping JSON line');
+        }
+        $stmt->execute([
+            'subject_id' => (int) $row['subject_id'],
+            'status' => (string) ($row['status'] ?? 'cached'),
+            'remote_filename' => $row['remote_filename'] ?? null,
+            'source_url' => $row['source_url'] ?? null,
+            'local_path' => $row['local_path'] ?? null,
+            'content_type' => $row['content_type'] ?? null,
+            'file_size' => $row['file_size'] ?? null,
+            'sha256' => $row['sha256'] ?? null,
+            'updated_at' => $row['updated_at'] ?? null,
+        ]);
+        $stats['update_success']++;
+    }
+    fclose($handle);
+    $stats['complete'] = true;
+    return $stats;
+}
+
 function print_stats(array $stats): void
 {
     foreach ($stats as $key => $value) {
@@ -557,7 +674,7 @@ function print_stats(array $stats): void
 
 function usage(): void
 {
-    echo "Usage: php bin/bangumi_covers.php <sync|check-updates|apply-updates|retry-failed|verify-files|deep-check> [options]\n";
+    echo "Usage: php bin/bangumi_covers.php <sync|check-updates|apply-updates|retry-failed|verify-files|deep-check|export-mapping|import-mapping> [options]\n";
     echo "All Bangumi subject scans are fixed to type=2, limit=100, images.large only.\n";
 }
 
@@ -571,6 +688,8 @@ try {
         'retry-failed' => print_stats(retry_failed($options)),
         'verify-files' => print_stats(verify_files($options)),
         'deep-check' => print_stats(deep_check($options)),
+        'export-mapping' => print_stats(export_mapping($options)),
+        'import-mapping' => print_stats(import_mapping($options)),
         default => usage(),
     };
 } catch (Throwable $exc) {

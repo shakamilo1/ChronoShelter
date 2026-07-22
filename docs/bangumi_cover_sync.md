@@ -45,14 +45,14 @@ covers/
 └── subjects/
     ├── 000/
     │   ├── 001/
-    │   │   └── 1424.jpg
+    │   │   └── 1424_Ewjo.jpg
     │   ├── 062/
-    │   │   └── 62229.jpg
+    │   │   └── 62229_abCd.jpg
     │   └── 491/
-    │       └── 491569.jpg
+    │       └── 491569_xxxxx.jpg
     └── 001/
         └── 234/
-            └── 1234567.jpg
+            └── 1234567_rjOg.jpg
 ```
 
 路径完全由数字 `subject_id` 和验证后的真实图片格式计算：
@@ -64,12 +64,12 @@ level2 = intdiv(subject_id % 1000000, 1000)
 
 `level1` 和 `level2` 至少补足为 3 位数字。例如：
 
-- `1424` -> `subjects/000/001/1424.jpg`
-- `62229` -> `subjects/000/062/62229.jpg`
-- `491569` -> `subjects/000/491/491569.jpg`
-- `1234567` -> `subjects/001/234/1234567.jpg`
+- `1424` + `1424_Ewjo.jpg` -> `subjects/000/001/1424_Ewjo.jpg`
+- `62229` -> `subjects/000/062/62229_abCd.jpg`
+- `491569` -> `subjects/000/491/491569_xxxxx.jpg`
+- `1234567` -> `subjects/001/234/1234567_rjOg.jpg`
 
-不会使用远程 URL 中的路径作为本地路径，数据库/清单只保存相对于 `covers/` 的路径。
+目录分片只由 `subject_id` 计算；正式文件名来自 `images.large` URL path 的安全 basename，例如 `1234_Ewjo.jpg`。如果 basename 不安全或格式不符合当前条目，则退回 `{subject_id}_{URL SHA-256 前 12 位}.{ext}`。数据库 `local_path` 决定网页显示哪个文件，同一 subject_id 可能先后出现多个不同文件名；当前映射切换成功后，网站才显示新封面。不会使用远程 URL 的目录作为本地路径，数据库/清单只保存相对于 `covers/` 的路径。
 
 ## 同步清单
 
@@ -185,3 +185,7 @@ var/cover-sync/covers.sqlite
 `var/cover-sync/tmp/`、日志、锁文件、失败报告不需要复制到 Web 公开目录。建议用目录级增量同步工具复制新增和修改文件，不要每次重新传输整个封面库。
 
 封面图片可能有独立版权，不要把整个封面库作为公开下载包发布。
+
+## 映射导出和正式部署
+
+下载机器和正式服务器可能不是同一台机器。完成离线同步后，先复制 `covers/subjects/` 中新增/更新的文件到正式服务器，再运行 `php bin/bangumi_covers.php export-mapping --file=var/cover-sync/reports/cover-mapping.jsonl` 导出映射，并在正式服务器运行 `php bin/bangumi_covers.php import-mapping --file=cover-mapping.jsonl` 导入 `cover_cache`。不能只复制图片而不复制数据库映射；网页只根据 `cover_cache.local_path` 显示封面，网页本身永远不访问 Bangumi。确认网页使用新路径后，最后再清理不再被映射引用的旧文件。

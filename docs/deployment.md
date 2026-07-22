@@ -225,9 +225,11 @@ php bin/bangumi_covers.php check-updates --resume
 php bin/bangumi_covers.php apply-updates --resume
 php bin/bangumi_covers.php retry-failed
 php bin/bangumi_covers.php deep-check --sample=100
+php bin/bangumi_covers.php export-mapping --file=var/cover-sync/reports/cover-mapping.jsonl
+php bin/bangumi_covers.php import-mapping --file=cover-mapping.jsonl
 ```
 
-运行数据在非公开目录 `var/cover-sync/`，正式图片在 `covers/subjects/`。正式服务器只需要部署/同步 `covers/subjects/`，并确保本地存在 `covers/logo.png`；如果网站依赖数据库中的 `cover_cache.local_path` 加速列表查询，也同步主库中的相对路径记录，单独的 `var/cover-sync/covers.sqlite` 可只保留在维护机器。详见 `docs/bangumi_cover_sync.md`。
+运行数据在非公开目录 `var/cover-sync/`，正式图片在 `covers/subjects/`，文件名保留 Bangumi `images.large` URL 的安全 basename，例如 `covers/subjects/000/001/1234_Ewjo.jpg`。正式服务器必须同时部署/同步 `covers/subjects/`、确保本地存在 `covers/logo.png`，并导入最新 `cover_cache.local_path` 映射；单独的 `var/cover-sync/covers.sqlite` 可只保留在维护机器。详见 `docs/bangumi_cover_sync.md`。
 
 ## 13. 索引兼容性说明
 
