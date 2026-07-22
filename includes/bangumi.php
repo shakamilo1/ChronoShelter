@@ -7,17 +7,34 @@ require_once __DIR__ . '/database.php';
 function list_anime(int $limit = 60, int $offset = 0): array
 {
     $libraryDb = db_identifier(library_database_name());
-    $sql = 'SELECT s.id, s.name, s.name_cn, s.date, s.score, s.favorite, cc.local_path AS cover_local_path, c.subject_id AS collected_subject_id
-            FROM subjects s
-            LEFT JOIN ' . $libraryDb . '.cover_cache cc ON cc.subject_id = s.id AND cc.status = \'cached\'
-            LEFT JOIN ' . $libraryDb . '.collections c ON c.subject_id = s.id AND c.collected = TRUE
-            WHERE s.type = 2
-            ORDER BY COALESCE(s.score, 0) DESC, s.id DESC
-            LIMIT :limit OFFSET :offset';
-    $stmt = db_public()->prepare($sql);
-    $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
-    $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
-    $stmt->execute();
+    $limit = max(1, min(200, (int) $limit));
+    $offset = max(0, (int) $offset);
+
+    // Keep future filters inside this indexed inner query. If name/nsfw/tag
+    // filtering is added later, count_anime() must receive the same filters so
+    // pagination totals stay correct; do not filter only after this page of IDs.
+    $sql = 'SELECT
+                s.id,
+                s.name,
+                s.name_cn,
+                s.date,
+                s.score,
+                cc.local_path AS cover_local_path,
+                c.subject_id AS collected_subject_id
+            FROM (
+                SELECT id, date
+                FROM subjects FORCE INDEX (idx_subjects_type_date_id)
+                WHERE type = 2
+                ORDER BY date DESC, id DESC
+                LIMIT ' . $limit . ' OFFSET ' . $offset . '
+            ) AS p
+            JOIN subjects s FORCE INDEX (PRIMARY) ON s.id = p.id
+            LEFT JOIN ' . $libraryDb . '.cover_cache cc FORCE INDEX (PRIMARY)
+                ON cc.subject_id = p.id AND cc.status = \'cached\'
+            LEFT JOIN ' . $libraryDb . '.collections c FORCE INDEX (PRIMARY)
+                ON c.subject_id = p.id AND c.collected = TRUE
+            ORDER BY p.date DESC, p.id DESC';
+    $stmt = db_public()->query($sql);
     return $stmt->fetchAll();
 }
 

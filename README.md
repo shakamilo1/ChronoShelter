@@ -176,6 +176,18 @@ CHRONOSHELTER_LIBRARY_DB_NAME=chrono_library
 - `collection_edit.php?id=xxx`：编辑是否收藏、收藏日期、媒体类型、字幕组、来源网站、我的评分、备注和观看进度。
 - `admin.php`：显示 subjects 数量、episodes 数量、收藏数量，并预留 Bangumi 数据更新入口。
 
+## 首页分页性能与索引
+
+首页只展示 `subjects.type = 2` 动画，默认按 `date DESC, id DESC` 排序。`list_anime()` 先在内层查询使用 `idx_subjects_type_date_id (type, date, id)` 只读取当前页的 `id,date`，完成 `WHERE type = 2`、排序、`LIMIT/OFFSET` 后，再按主键读取这 50 条完整记录并关联 `cover_cache` 与 `collections`，避免 MariaDB 对全部动画做临时表和 filesort。生产查询不依赖 MariaDB 查询缓存，也不使用 `SQL_NO_CACHE`。
+
+已有部署不需要重建数据库、不需要修改私人收藏数据、不需要修改或重新下载封面，但必须在 `chrono_bangumi` 上执行新增索引迁移：
+
+```bash
+mysql -u root -p chrono_bangumi < sql/migrations/004_add_subjects_pagination_indexes.sql
+```
+
+保留 `idx_subjects_type_score_id (type, score, id)` 供未来评分排序使用。未来如果增加名称、NSFW 或标签筛选，筛选条件必须进入内层分页查询的 `WHERE`，并让 `count_anime() 使用相同条件`；普通 B-tree 只适合精确/前缀名称搜索（如 `高达%`），不解决 `%高达%` 任意包含搜索。`meta_tags` 是 JSON，不要直接给整段 JSON 建普通索引；如需标签筛选，应拆成 `subject_meta_tags(subject_id, tag)` 并建立 `(tag, subject_id)`。
+
 ## 图片缓存
 
 网页请求只读取本地目录中的封面：

@@ -7,6 +7,8 @@ CREATE INDEX IF NOT EXISTS `idx_subjects_type_name_name_cn` ON `subjects` (`type
 CREATE INDEX IF NOT EXISTS `idx_subjects_name` ON `subjects` (`name`);
 CREATE INDEX IF NOT EXISTS `idx_subjects_name_cn` ON `subjects` (`name_cn`);
 CREATE INDEX IF NOT EXISTS `idx_subjects_type_date` ON `subjects` (`type`, `date`);
+CREATE INDEX IF NOT EXISTS `idx_subjects_type_date_id` ON `subjects` (`type`, `date`, `id`);
+CREATE INDEX IF NOT EXISTS `idx_subjects_type_score_id` ON `subjects` (`type`, `score`, `id`);
 CREATE INDEX IF NOT EXISTS `idx_subjects_rank` ON `subjects` (`rank`);
 
 CREATE INDEX IF NOT EXISTS `idx_episodes_subject_id` ON `episodes` (`subject_id`);

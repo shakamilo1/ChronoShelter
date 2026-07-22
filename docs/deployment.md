@@ -202,6 +202,16 @@ data/
 └── logs/              # 离线工具日志
 ```
 
+## 首页分页索引迁移
+
+已有部署升级后必须在公共库 `chrono_bangumi` 执行：
+
+```bash
+mysql -u root -p chrono_bangumi < sql/migrations/004_add_subjects_pagination_indexes.sql
+```
+
+该迁移只新增 `idx_subjects_type_date_id (type, date, id)` 和保留未来评分排序用的 `idx_subjects_type_score_id (type, score, id)`，不需要重建数据库、不修改 `chrono_library` 私人收藏、不修改封面文件。首页默认 `date DESC, id DESC`，先用索引确定当前页 ID，再读取 50 条完整记录并关联封面/收藏，避免依赖 MariaDB 查询缓存掩盖慢查询。未来新增名称、NSFW、标签筛选时，条件必须放进内层分页查询并同步到 `count_anime()`；`meta_tags` JSON 不应直接建立普通 B-tree 索引。
+
 ## 12. 动画封面离线同步
 
 网页请求不会下载 Bangumi 封面，也不会访问 `api.bgm.tv` 或 `lain.bgm.tv`。封面只由 PHP CLI 离线工具维护，并且固定只处理 Bangumi `type=2` 动画、批量接口 `GET /v0/subjects?type=2&limit=100&offset=...`、`images.large`。旧的 Python 单条目封面下载脚本已经禁用，避免误用 `/v0/subjects/{id}/image` 或远程默认图。
