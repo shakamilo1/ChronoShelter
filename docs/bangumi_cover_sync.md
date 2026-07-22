@@ -33,7 +33,7 @@ shakamilo1/ChronoShelter-cover-sync/1.0 (https://github.com/shakamilo1/ChronoShe
 export BANGUMI_ACCESS_TOKEN='你的 Bangumi access token'
 ```
 
-有 Token 时 CLI 发送 `Authorization: Bearer <token>`；没有 Token 时匿名运行。Token 不写入源码、配置示例、日志或 Git 仓库。匿名 API 结果可能不包含 NSFW 动画条目。
+有 Token 时，只有严格指向 `https://api.bgm.tv` 的 API JSON 请求会发送 `Authorization: Bearer <token>`；API 请求禁止自动跟随重定向，3xx 会失败。图片下载请求和图片重定向始终重新生成不含 Authorization 的请求头。没有 Token 时匿名运行。Token 不写入源码、配置示例、日志或 Git 仓库。匿名 API 结果可能不包含 NSFW 动画条目。
 
 ## 封面目录结构
 
@@ -158,7 +158,7 @@ php bin/bangumi_covers.php deep-check --all --confirm-all
 
 ## 图片验证与安全替换
 
-CLI 只接受 JPEG、PNG、WebP。下载必须 HTTP 200、非空、Content-Type 与文件头匹配，且内容不能是 HTML/JSON 错误页或 Bangumi 默认无图占位。验证后计算 SHA-256，再原子移动到正式分片目录。更新封面时先保存新文件并更新清单；旧文件始终保留，直到未来有生产引用证明的显式清理流程确认可删。下载失败时保留旧封面。
+CLI 只接受 JPEG、PNG、WebP。下载必须 HTTP 200、非空、Content-Type 与文件头匹配，且内容不能是 HTML/JSON 错误页或 Bangumi 默认无图占位；初始 URL 或手动重定向最终 URL 的 basename 为 `no_icon_subject.png` 时按无封面处理。离线验证会检查 finfo、getimagesize、格式结构和 GD/Imagick 完整解码，验证通过后才计算 SHA-256 并落盘。更新封面时先保存新文件并更新清单；旧文件始终保留，直到未来有生产引用证明的显式清理流程确认可删。下载失败时保留旧封面。
 
 `remote_missing` 默认不会删除旧封面，避免 Bangumi 短暂异常导致批量丢图。未来如需清理，应使用显式清理参数并先审查目标。
 

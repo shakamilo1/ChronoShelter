@@ -336,7 +336,7 @@ CHRONOSHELTER_AUTH_PASSWORD_HASH='password_hash 输出值'
 
 ## 封面批量下载工具
 
-网页浏览不会联网补齐封面。只有在当前维护环境能够访问 Bangumi 时，才可手动运行离线 PHP CLI 工具。该工具固定只扫描 `type=2` 动画，使用 Bangumi 批量接口、`limit=50`、`images.large`，并把封面保存到 `covers/subjects/` 两级分片目录。
+网页浏览不会联网补齐封面。只有在当前维护环境能够访问 Bangumi 时，才可手动运行离线 PHP CLI 工具。该工具固定只扫描 `type=2` 动画，使用 Bangumi 批量接口、`limit=50`、`images.large`，并把封面保存到 `covers/subjects/` 两级分片目录。`BANGUMI_ACCESS_TOKEN` 只会发送给 `https://api.bgm.tv` 的 API JSON 请求；图片下载请求和任何重定向都不会携带 Authorization。
 
 小规模验证：
 

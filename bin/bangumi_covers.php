@@ -165,7 +165,7 @@ function safe_remote_filename(int $subjectId, string $url, string $detectedExten
 
 function cover_relative_path(int $subjectId, string $filename): string
 {
-    if ($subjectId <= 0 || !preg_match('/^' . preg_quote((string) $subjectId, '/') . '_[A-Za-z0-9_-]+(?:--[a-f0-9]{12})?\.(jpg|jpeg|png|webp)$/i', $filename)) {
+    if ($subjectId <= 0 || !preg_match('/^' . preg_quote((string) $subjectId, '/') . '_[A-Za-z0-9_-]+(?:--[a-f0-9]{12}|--[a-f0-9]{64})?\.(jpg|jpeg|png|webp)$/i', $filename)) {
         throw new InvalidArgumentException('invalid cover filename');
     }
     return cover_partition_prefix($subjectId) . $filename;
@@ -173,15 +173,29 @@ function cover_relative_path(int $subjectId, string $filename): string
 
 function cover_absolute_path(string $relativePath): string
 {
-    if (!preg_match('#^subjects/[0-9]{3,}/[0-9]{3}/[0-9]+_[A-Za-z0-9_-]+(?:--[a-f0-9]{12})?\.(jpg|jpeg|png|webp)$#i', $relativePath)
+    if (!preg_match('#^subjects/[0-9]{3,}/[0-9]{3}/[0-9]+_[A-Za-z0-9_-]+(?:--[a-f0-9]{12}|--[a-f0-9]{64})?\.(jpg|jpeg|png|webp)$#i', $relativePath)
         && !preg_match('#^[0-9]+\.(jpg|jpeg|png|webp)$#i', $relativePath)) {
         throw new InvalidArgumentException('unsafe relative cover path');
     }
     return cover_sync_paths()['covers'] . '/' . $relativePath;
 }
 
-function api_request_headers(): array
+function normalized_url_host(string $url): ?string
 {
+    $host = parse_url($url, PHP_URL_HOST);
+    if (!is_string($host) || $host === '') {
+        return null;
+    }
+    return strtolower(rtrim($host, '.'));
+}
+
+function api_request_headers(string $url): array
+{
+    $scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
+    $host = normalized_url_host($url);
+    if ($scheme !== 'https' || $host !== 'api.bgm.tv') {
+        throw new RuntimeException('refusing to send Bangumi API request outside https://api.bgm.tv');
+    }
     $headers = ['User-Agent: ' . BANGUMI_COVER_USER_AGENT, 'Accept: application/json'];
     $token = getenv('BANGUMI_ACCESS_TOKEN') ?: '';
     if ($token !== '') {
@@ -198,39 +212,97 @@ function image_request_headers(array $conditionalHeaders = []): array
     ], $conditionalHeaders);
 }
 
+function http_request_once(string $url, array $headers, int $timeout = 30): array
+{
+    if (isset($GLOBALS['cover_sync_http_transport']) && is_callable($GLOBALS['cover_sync_http_transport'])) {
+        return ($GLOBALS['cover_sync_http_transport'])($url, $headers, $timeout);
+    }
+    $http_response_header = [];
+    $context = stream_context_create(['http' => [
+        'method' => 'GET',
+        'header' => implode("\r\n", $headers),
+        'timeout' => $timeout,
+        'ignore_errors' => true,
+        'follow_location' => 0,
+        'max_redirects' => 0,
+    ]]);
+    $body = @file_get_contents($url, false, $context);
+    $status = 0;
+    $responseHeaders = [];
+    foreach ($http_response_header ?? [] as $line) {
+        if (preg_match('#^HTTP/\S+\s+(\d+)#', $line, $m)) {
+            $status = (int) $m[1];
+        } elseif (str_contains($line, ':')) {
+            [$name, $value] = explode(':', $line, 2);
+            $responseHeaders[strtolower(trim($name))] = trim($value);
+        }
+    }
+    return ['status' => $status, 'headers' => $responseHeaders, 'body' => $body === false ? '' : $body, 'error' => $body === false ? (error_get_last()['message'] ?? 'request failed') : null, 'final_url' => $url];
+}
+
 function http_request(string $url, array $headers, int $timeout = 30, int $maxRetries = 3): array
 {
     $attempt = 0;
     while (true) {
         $attempt++;
-        $http_response_header = [];
-        $context = stream_context_create(['http' => [
-            'method' => 'GET',
-            'header' => implode("\r\n", $headers),
-            'timeout' => $timeout,
-            'ignore_errors' => true,
-        ]]);
-        $body = @file_get_contents($url, false, $context);
-        $status = 0;
-        $responseHeaders = [];
-        foreach ($http_response_header ?? [] as $line) {
-            if (preg_match('#^HTTP/\S+\s+(\d+)#', $line, $m)) {
-                $status = (int) $m[1];
-            } elseif (str_contains($line, ':')) {
-                [$name, $value] = explode(':', $line, 2);
-                $responseHeaders[strtolower(trim($name))] = trim($value);
-            }
-        }
-        if ($body !== false && !in_array($status, [429, 500, 502, 503, 504], true)) {
-            return ['status' => $status, 'headers' => $responseHeaders, 'body' => $body];
+        $response = http_request_once($url, $headers, $timeout);
+        $status = (int) ($response['status'] ?? 0);
+        if (!in_array($status, [429, 500, 502, 503, 504], true)) {
+            return $response;
         }
         if ($attempt >= $maxRetries) {
-            return ['status' => $status, 'headers' => $responseHeaders, 'body' => $body === false ? '' : $body, 'error' => error_get_last()['message'] ?? 'request failed'];
+            return $response;
         }
+        $responseHeaders = $response['headers'] ?? [];
         $retryAfter = isset($responseHeaders['retry-after']) ? (int) $responseHeaders['retry-after'] : 0;
         $sleep = $retryAfter > 0 ? $retryAfter : min(30, 2 ** $attempt) + random_int(0, 1000) / 1000;
         usleep((int) ($sleep * 1000000));
     }
+}
+
+function resolve_redirect_url(string $baseUrl, string $location): string
+{
+    if (preg_match('#^https?://#i', $location)) {
+        return $location;
+    }
+    $scheme = parse_url($baseUrl, PHP_URL_SCHEME);
+    $host = parse_url($baseUrl, PHP_URL_HOST);
+    if (!is_string($scheme) || !is_string($host)) {
+        throw new RuntimeException('cannot resolve redirect URL');
+    }
+    if (str_starts_with($location, '/')) {
+        return $scheme . '://' . $host . $location;
+    }
+    $path = parse_url($baseUrl, PHP_URL_PATH);
+    $dir = rtrim(str_replace('\\', '/', dirname(is_string($path) ? $path : '/')), '/');
+    return $scheme . '://' . $host . ($dir === '' ? '/' : $dir . '/') . $location;
+}
+
+function http_request_follow_image_redirects(string $url, array $conditionalHeaders, int $timeout = 45, int $maxRedirects = 5): array
+{
+    $current = $url;
+    for ($redirects = 0; $redirects <= $maxRedirects; $redirects++) {
+        $scheme = strtolower((string) parse_url($current, PHP_URL_SCHEME));
+        if (!in_array($scheme, ['http', 'https'], true)) {
+            throw new RuntimeException('invalid image URL scheme');
+        }
+        $response = http_request_once($current, image_request_headers($conditionalHeaders), $timeout);
+        $response['final_url'] = $current;
+        $status = (int) ($response['status'] ?? 0);
+        if (in_array($status, [301, 302, 303, 307, 308], true)) {
+            $location = $response['headers']['location'] ?? null;
+            if (!is_string($location) || trim($location) === '') {
+                throw new RuntimeException('image redirect missing Location');
+            }
+            if ($redirects === $maxRedirects) {
+                throw new RuntimeException('too many image redirects');
+            }
+            $current = resolve_redirect_url($current, $location);
+            continue;
+        }
+        return $response;
+    }
+    throw new RuntimeException('too many image redirects');
 }
 
 function fetch_subject_page(int $offset): array
@@ -239,7 +311,10 @@ function fetch_subject_page(int $offset): array
         throw new InvalidArgumentException('Bangumi API offset must be non-negative');
     }
     $url = BANGUMI_SUBJECTS_API . '?type=' . SUBJECT_TYPE_ANIME . '&limit=' . PAGE_LIMIT . '&offset=' . $offset;
-    $response = http_request($url, api_request_headers());
+    $response = http_request($url, api_request_headers($url));
+    if ((int) ($response['status'] ?? 0) >= 300 && (int) ($response['status'] ?? 0) < 400) {
+        throw new RuntimeException('Bangumi API redirect refused');
+    }
     if (($response['status'] ?? 0) !== 200) {
         throw new RuntimeException('Bangumi API failed: HTTP ' . ($response['status'] ?? 0));
     }
@@ -292,6 +367,76 @@ function image_type_from_bytes(string $data, string $contentType): ?array
     return null;
 }
 
+
+function validate_jpeg_structure(string $data): bool
+{
+    return str_starts_with($data, "\xFF\xD8") && str_ends_with($data, "\xFF\xD9");
+}
+
+function validate_png_structure(string $data): bool
+{
+    if (!str_starts_with($data, "\x89PNG\r\n\x1A\n")) return false;
+    $offset = 8;
+    $len = strlen($data);
+    while ($offset + 12 <= $len) {
+        $length = unpack('N', substr($data, $offset, 4))[1];
+        $type = substr($data, $offset + 4, 4);
+        $chunkStart = $offset + 8;
+        $crcStart = $chunkStart + $length;
+        if ($length < 0 || $crcStart + 4 > $len) return false;
+        $chunkData = substr($data, $chunkStart, $length);
+        $expected = unpack('N', substr($data, $crcStart, 4))[1];
+        $actual = crc32($type . $chunkData);
+        if (($actual & 0xffffffff) !== $expected) return false;
+        $offset = $crcStart + 4;
+        if ($type === 'IEND') return $offset === $len;
+    }
+    return false;
+}
+
+function validate_webp_structure(string $data): bool
+{
+    if (strlen($data) < 12 || substr($data, 0, 4) !== 'RIFF' || substr($data, 8, 4) !== 'WEBP') return false;
+    $declared = unpack('V', substr($data, 4, 4))[1] + 8;
+    return $declared === strlen($data);
+}
+
+function validate_image_structure_bytes(string $data, string $extension): bool
+{
+    return match ($extension) {
+        'jpg' => validate_jpeg_structure($data),
+        'png' => validate_png_structure($data),
+        'webp' => validate_webp_structure($data),
+        default => false,
+    };
+}
+
+function assert_image_decoder_available(): void
+{
+    if (!function_exists('imagecreatefromstring') && !class_exists('Imagick')) {
+        throw new RuntimeException('no reliable image decoder available; enable GD or Imagick');
+    }
+}
+
+function decode_image_fully(string $data): void
+{
+    assert_image_decoder_available();
+    set_error_handler(static function (): bool { throw new RuntimeException('image decode warning'); });
+    try {
+        if (function_exists('imagecreatefromstring')) {
+            $image = imagecreatefromstring($data);
+            if ($image === false) throw new RuntimeException('image decode failed');
+            imagedestroy($image);
+            return;
+        }
+        $image = new Imagick();
+        $image->readImageBlob($data);
+        $image->clear();
+    } finally {
+        restore_error_handler();
+    }
+}
+
 function validate_image_file(string $path, string $contentType): array
 {
     if (!is_file($path) || filesize($path) < 32 || filesize($path) > 20 * 1024 * 1024) {
@@ -318,25 +463,31 @@ function validate_image_file(string $path, string $contentType): array
     if (!is_array($imageSize) || ($imageSize[0] ?? 0) <= 0 || ($imageSize[1] ?? 0) <= 0 || ($imageSize['mime'] ?? null) !== $type[0]) {
         throw new RuntimeException('downloaded image structure is invalid');
     }
+    if (!validate_image_structure_bytes($data, $type[1])) {
+        throw new RuntimeException('downloaded image container is incomplete');
+    }
+    decode_image_fully($data);
     return ['mime_type' => $type[0], 'extension' => $type[1], 'file_size' => filesize($path), 'sha256' => hash_file('sha256', $path)];
 }
 
 function download_image_to_tmp(int $subjectId, string $url, array $conditionalHeaders = []): array
 {
-    $tmp = cover_sync_paths()['tmp'] . '/' . $subjectId . '.part';
-    @unlink($tmp);
-    $scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
-    if (!in_array($scheme, ['http', 'https'], true)) {
-        throw new RuntimeException('invalid image URL scheme');
+    $baseTmp = tempnam(cover_sync_paths()['tmp'], $subjectId . '-');
+    if ($baseTmp === false) {
+        throw new RuntimeException('cannot create temp image file');
     }
-    $response = http_request($url, image_request_headers($conditionalHeaders), 45);
-    if (($response['status'] ?? 0) === 304) {
-        return ['not_modified' => true, 'headers' => $response['headers'] ?? []];
-    }
+    $tmp = $baseTmp . '.part';
+    @unlink($baseTmp);
+    try {
+        $response = http_request_follow_image_redirects($url, $conditionalHeaders, 45);
+        if (($response['status'] ?? 0) === 304) {
+            if (is_file($tmp)) { @unlink($tmp); }
+            return ['not_modified' => true, 'headers' => $response['headers'] ?? [], 'final_url' => $response['final_url'] ?? $url];
+        }
     if (($response['status'] ?? 0) !== 200) {
         throw new RuntimeException('image download failed: HTTP ' . ($response['status'] ?? 0));
     }
-    $finalUrl = $response['headers']['x-final-url'] ?? $url;
+    $finalUrl = $response['final_url'] ?? $url;
     $finalPath = parse_url($finalUrl, PHP_URL_PATH);
     if (is_string($finalPath) && basename($finalPath) === 'no_icon_subject.png') {
         throw new RuntimeException('Bangumi no-icon placeholder rejected');
@@ -348,7 +499,12 @@ function download_image_to_tmp(int $subjectId, string $url, array $conditionalHe
     $meta['tmp_path'] = $tmp;
     $meta['etag'] = $response['headers']['etag'] ?? null;
     $meta['last_modified'] = $response['headers']['last-modified'] ?? null;
+    $meta['final_url'] = $finalUrl;
     return $meta;
+    } catch (Throwable $exc) {
+        if (is_file($tmp)) { @unlink($tmp); }
+        throw $exc;
+    }
 }
 
 function upsert_observed(int $subjectId, ?string $url, string $mode): string
@@ -416,6 +572,38 @@ function mark_failed(int $subjectId, string $message): void
     $stmt->execute(['id' => $subjectId, 'error' => mb_substr($message, 0, 1000), 'checked' => now_utc()]);
 }
 
+
+function move_no_clobber(string $source, string $target): void
+{
+    $in = fopen($source, 'rb');
+    if ($in === false) {
+        throw new RuntimeException('cannot open temp cover for read');
+    }
+    $out = fopen($target, 'xb');
+    if ($out === false) {
+        fclose($in);
+        throw new RuntimeException('target cover already exists');
+    }
+    try {
+        if (stream_copy_to_stream($in, $out) === false) {
+            throw new RuntimeException('cannot write target cover');
+        }
+    } finally {
+        fclose($in);
+        fclose($out);
+    }
+    if (!unlink($source)) {
+        throw new RuntimeException('cannot remove temp cover after move');
+    }
+}
+
+function versioned_cover_filename(string $remoteFilename, string $sha256, int $length = 12): string
+{
+    $extension = pathinfo($remoteFilename, PATHINFO_EXTENSION);
+    $stem = substr($remoteFilename, 0, -strlen('.' . $extension));
+    return $stem . '--' . substr($sha256, 0, $length) . '.' . $extension;
+}
+
 function apply_one(int $subjectId, bool $dryRun = false): bool
 {
     $row = manifest_row($subjectId);
@@ -435,11 +623,19 @@ function apply_one(int $subjectId, bool $dryRun = false): bool
             if ($existingSha === $meta['sha256']) {
                 @unlink($meta['tmp_path']);
             } else {
-                $extension = pathinfo($remoteFilename, PATHINFO_EXTENSION);
-                $stem = substr($remoteFilename, 0, -strlen('.' . $extension));
-                $localFilename = $stem . '--' . substr($meta['sha256'], 0, 12) . '.' . $extension;
+                $localFilename = versioned_cover_filename($remoteFilename, $meta['sha256'], 12);
                 $relative = cover_relative_path($subjectId, $localFilename);
                 $target = cover_absolute_path($relative);
+                if (is_file($target)) {
+                    $versionedSha = hash_file('sha256', $target);
+                    if ($versionedSha === $meta['sha256']) {
+                        @unlink($meta['tmp_path']);
+                    } else {
+                        $localFilename = versioned_cover_filename($remoteFilename, $meta['sha256'], 64);
+                        $relative = cover_relative_path($subjectId, $localFilename);
+                        $target = cover_absolute_path($relative);
+                    }
+                }
             }
         }
         if (is_file($meta['tmp_path'])) {
@@ -447,9 +643,7 @@ function apply_one(int $subjectId, bool $dryRun = false): bool
             if (!is_dir($targetDir) && !mkdir($targetDir, 0775, true) && !is_dir($targetDir)) {
                 throw new RuntimeException('cannot create cover directory');
             }
-            if (!rename($meta['tmp_path'], $target)) {
-                throw new RuntimeException('cannot move cover atomically');
-            }
+            move_no_clobber($meta['tmp_path'], $target);
         }
         $stmt = db()->prepare('UPDATE cover_manifest SET downloaded_url = observed_url, remote_filename = :remote_filename, relative_path = :path, mime_type = :mime,
             file_extension = :ext, file_size = :size, sha256 = :sha, etag = :etag, last_modified = :lm,
@@ -536,7 +730,7 @@ function scan_pages(string $mode, array $options): array
     $start = microtime(true);
     $stats = stats_template($mode);
     $run = current_run($mode, (bool) $options['resume']);
-    $offset = $mode === 'check-updates' ? 0 : (int) $run['next_offset'];
+    $offset = (int) $run['next_offset'];
     $total = $run['total'] !== null ? (int) $run['total'] : null;
     $processedItems = 0;
     $changes = [];
@@ -670,7 +864,8 @@ function deep_check(array $options): array
         try {
             $meta = download_image_to_tmp((int) $row['subject_id'], (string) $row['downloaded_url'], $headers);
             if (($meta['not_modified'] ?? false) === true) {
-                db()->prepare("UPDATE cover_manifest SET status = 'unchanged', last_checked_at = :checked WHERE subject_id = :id")->execute(['checked' => now_utc(), 'id' => $row['subject_id']]);
+                $nextStatus = in_array(($row['status'] ?? ''), ['pending_deploy', 'mapping_failed'], true) ? (string) $row['status'] : 'unchanged';
+                db()->prepare('UPDATE cover_manifest SET status = :status, last_checked_at = :checked WHERE subject_id = :id')->execute(['status' => $nextStatus, 'checked' => now_utc(), 'id' => $row['subject_id']]);
                 $stats['existing_skipped']++;
                 continue;
             }
@@ -679,11 +874,18 @@ function deep_check(array $options): array
                 $stats['deep_changes']++;
             } else {
                 @unlink($meta['tmp_path']);
-                db()->prepare("UPDATE cover_manifest SET status = 'unchanged', last_checked_at = :checked WHERE subject_id = :id")->execute(['checked' => now_utc(), 'id' => $row['subject_id']]);
+                $nextStatus = in_array(($row['status'] ?? ''), ['pending_deploy', 'mapping_failed'], true) ? (string) $row['status'] : 'unchanged';
+                db()->prepare('UPDATE cover_manifest SET status = :status, last_checked_at = :checked WHERE subject_id = :id')->execute(['status' => $nextStatus, 'checked' => now_utc(), 'id' => $row['subject_id']]);
                 $stats['existing_skipped']++;
             }
+            if (isset($meta['tmp_path']) && is_file($meta['tmp_path'])) { @unlink($meta['tmp_path']); }
         } catch (Throwable $exc) {
-            mark_failed((int) $row['subject_id'], $exc->getMessage());
+            if (in_array(($row['status'] ?? ''), ['pending_deploy', 'mapping_failed'], true)) {
+                db()->prepare('UPDATE cover_manifest SET error_message = :error, last_checked_at = :checked WHERE subject_id = :id')
+                    ->execute(['error' => mb_substr($exc->getMessage(), 0, 1000), 'checked' => now_utc(), 'id' => $row['subject_id']]);
+            } else {
+                mark_failed((int) $row['subject_id'], $exc->getMessage());
+            }
             $stats['update_failed']++;
         }
         usleep((int) (((float) $options['download-delay']) * 1000000));
@@ -748,6 +950,11 @@ function import_mapping_row_is_safe(array $row): array
         throw new RuntimeException('invalid import status for subject_id=' . $subjectId);
     }
     if ($status === 'no_cover') {
+        foreach (['local_path', 'remote_filename', 'file_size', 'sha256', 'content_type', 'file_extension'] as $field) {
+            if (isset($row[$field]) && $row[$field] !== null && $row[$field] !== '') {
+                throw new RuntimeException('no_cover mapping must not include file fields for subject_id=' . $subjectId);
+            }
+        }
         return ['subject_id' => $subjectId, 'status' => 'no_cover', 'remote_filename' => null, 'source_url' => null, 'local_path' => null, 'content_type' => null, 'file_size' => null, 'sha256' => null, 'updated_at' => $row['updated_at'] ?? null];
     }
     $relativePath = (string) ($row['local_path'] ?? '');
@@ -762,30 +969,49 @@ function import_mapping_row_is_safe(array $row): array
     }
     $prefix = cover_partition_prefix($subjectId);
     $base = basename($relativePath);
-    if (!str_starts_with($relativePath, $prefix) || !preg_match('/^' . preg_quote((string) $subjectId, '/') . '_[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$/i', $base)) {
+    if (!str_starts_with($relativePath, $prefix) || !preg_match('/^' . preg_quote((string) $subjectId, '/') . '_[A-Za-z0-9_-]+(?:--[a-f0-9]{12}|--[a-f0-9]{64})?\.(jpg|jpeg|png|webp)$/i', $base)) {
         throw new RuntimeException('mapped path does not match subject shard/name for subject_id=' . $subjectId);
     }
     if (!is_file($absolute)) {
         throw new RuntimeException('mapped file missing for subject_id=' . $subjectId);
     }
-    if (isset($row['file_size']) && $row['file_size'] !== null && filesize($absolute) !== (int) $row['file_size']) {
+    if (!isset($row['file_size']) || $row['file_size'] === null || filesize($absolute) !== (int) $row['file_size']) {
         throw new RuntimeException('mapped file size mismatch for subject_id=' . $subjectId);
     }
-    if (empty($row['sha256']) || hash_file('sha256', $absolute) !== $row['sha256']) {
+    if (empty($row['sha256']) || !preg_match('/^[a-f0-9]{64}$/i', (string) $row['sha256']) || hash_file('sha256', $absolute) !== $row['sha256']) {
         throw new RuntimeException('mapped file sha256 mismatch for subject_id=' . $subjectId);
     }
-    if (!local_cover_ok($relativePath, ['file_size' => $row['file_size'] ?? null, 'sha256' => $row['sha256'] ?? null])) {
-        throw new RuntimeException('mapped file is not a valid image for subject_id=' . $subjectId);
+    if (empty($row['content_type'])) {
+        throw new RuntimeException('cached mapping missing content_type for subject_id=' . $subjectId);
+    }
+    $validated = validate_image_file($absolute, (string) $row['content_type']);
+    if ($validated['sha256'] !== strtolower((string) $row['sha256']) || $validated['file_size'] !== (int) $row['file_size']) {
+        throw new RuntimeException('mapped file metadata mismatch for subject_id=' . $subjectId);
+    }
+    $remoteFilename = (string) ($row['remote_filename'] ?? '');
+    if ($remoteFilename === '' || !preg_match('/^' . preg_quote((string) $subjectId, '/') . '_[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$/i', $remoteFilename)) {
+        throw new RuntimeException('unsafe remote_filename for subject_id=' . $subjectId);
+    }
+    if (str_contains($base, '--')) {
+        $expectedStem = pathinfo($remoteFilename, PATHINFO_FILENAME);
+        $expectedExt = strtolower(pathinfo($remoteFilename, PATHINFO_EXTENSION));
+        if ($expectedExt === 'jpeg') $expectedExt = 'jpg';
+        $sha = strtolower((string) $row['sha256']);
+        $shortName = $expectedStem . '--' . substr($sha, 0, 12) . '.' . $expectedExt;
+        $fullName = $expectedStem . '--' . $sha . '.' . $expectedExt;
+        if ($base !== $shortName && $base !== $fullName) {
+            throw new RuntimeException('versioned local_path does not match remote_filename and sha256 for subject_id=' . $subjectId);
+        }
     }
     return [
         'subject_id' => $subjectId,
         'status' => 'cached',
-        'remote_filename' => $row['remote_filename'] ?? basename($relativePath),
+        'remote_filename' => $remoteFilename,
         'source_url' => $row['source_url'] ?? null,
         'local_path' => $relativePath,
-        'content_type' => $row['content_type'] ?? mime_content_type($absolute),
+        'content_type' => $validated['mime_type'],
         'file_size' => filesize($absolute),
-        'sha256' => $row['sha256'],
+        'sha256' => strtolower((string) $row['sha256']),
         'updated_at' => $row['updated_at'] ?? null,
     ];
 }
@@ -869,7 +1095,7 @@ function cleanup_covers(array $options): array
         $path = $fileInfo->getPathname();
         $relative = str_replace('\\', '/', substr($path, strlen(rtrim($root, DIRECTORY_SEPARATOR)) + 1));
         if (isset($referenced[$relative])) continue;
-        if (!preg_match('#^subjects/[0-9]{3,}/[0-9]{3}/[0-9]+_[A-Za-z0-9_-]+(?:--[a-f0-9]{12})?\.(jpg|jpeg|png|webp)$#i', $relative)) continue;
+        if (!preg_match('#^subjects/[0-9]{3,}/[0-9]{3}/[0-9]+_[A-Za-z0-9_-]+(?:--[a-f0-9]{12}|--[a-f0-9]{64})?\.(jpg|jpeg|png|webp)$#i', $relative)) continue;
         echo "cleanup_candidate: {$relative}\n";
         $stats['scanned_anime']++;
     }
@@ -890,31 +1116,36 @@ function usage(): void
     echo "All Bangumi subject scans are fixed to type=2, limit=50, images.large only.\n";
 }
 
-[$command, $options] = cli_options($argv);
-$GLOBALS['cover_sync_options'] = $options;
-try {
-    ensure_runtime_dirs();
-    $stats = match ($command) {
-        'sync' => scan_pages('sync', $options),
-        'check-updates' => scan_pages('check-updates', $options),
-        'apply-updates' => apply_updates($options),
-        'retry-failed' => retry_failed($options),
-        'verify-files' => verify_files($options),
-        'deep-check' => deep_check($options),
-        'export-mapping' => export_mapping($options),
-        'import-mapping' => import_mapping($options),
-        'cleanup-covers' => cleanup_covers($options),
-        default => null,
-    };
-    if ($stats === null) {
-        usage();
-    } else {
-        print_stats($stats);
-        if (($stats['update_failed'] ?? 0) > 0) {
-            exit(1);
+function main(array $argv): int
+{
+    [$command, $options] = cli_options($argv);
+    $GLOBALS['cover_sync_options'] = $options;
+    try {
+        ensure_runtime_dirs();
+        $stats = match ($command) {
+            'sync' => scan_pages('sync', $options),
+            'check-updates' => scan_pages('check-updates', $options),
+            'apply-updates' => apply_updates($options),
+            'retry-failed' => retry_failed($options),
+            'verify-files' => verify_files($options),
+            'deep-check' => deep_check($options),
+            'export-mapping' => export_mapping($options),
+            'import-mapping' => import_mapping($options),
+            'cleanup-covers' => cleanup_covers($options),
+            default => null,
+        };
+        if ($stats === null) {
+            usage();
+            return 0;
         }
+        print_stats($stats);
+        return (($stats['update_failed'] ?? 0) > 0) ? 1 : 0;
+    } catch (Throwable $exc) {
+        fwrite(STDERR, 'ERROR: ' . $exc->getMessage() . "\n");
+        return 1;
     }
-} catch (Throwable $exc) {
-    fwrite(STDERR, 'ERROR: ' . $exc->getMessage() . "\n");
-    exit(1);
+}
+
+if (realpath((string) ($_SERVER['SCRIPT_FILENAME'] ?? '')) === __FILE__) {
+    exit(main($argv));
 }

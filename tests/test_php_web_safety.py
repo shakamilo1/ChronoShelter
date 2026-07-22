@@ -111,7 +111,7 @@ def test_web_cover_path_safety_and_local_onerror_fallback():
     assert "str_contains($path, '..')" in image
     assert "cover_partition_prefix($subjectId" in image
     assert "str_starts_with($real, rtrim($coverRoot" in image
-    assert "(?:--[a-f0-9]{12})?" in image
+    assert "(?:--[a-f0-9]{12}|--[a-f0-9]{64})?" in image
     assert "this.onerror=null" in image
     assert "cover_onerror_attr()" in pages
     assert "api.bgm.tv" not in image + pages

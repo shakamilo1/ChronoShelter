@@ -114,9 +114,11 @@ def test_resume_cursor_advances_per_consumed_api_record():
 
 def test_versioned_local_filename_for_same_remote_name_different_sha():
     apply_block = CLI[CLI.index("function apply_one"):CLI.index("function sync_mysql_cover_cache")]
-    assert "--' . substr($meta['sha256'], 0, 12)" in apply_block
+    assert "versioned_cover_filename($remoteFilename, $meta['sha256'], 12)" in apply_block
+    assert "versioned_cover_filename($remoteFilename, $meta['sha256'], 64)" in apply_block
     assert "$existingSha === $meta['sha256']" in apply_block
-    assert "(?:--[a-f0-9]{12})?" in CLI
+    assert "(?:--[a-f0-9]{12}|--[a-f0-9]{64})?" in CLI
+    assert "move_no_clobber" in CLI
 
 
 def test_api_and_image_request_headers_are_isolated():
@@ -131,7 +133,9 @@ def test_api_and_image_request_headers_are_isolated():
 
 
 def test_image_download_rejects_invalid_url_scheme_and_uses_image_headers():
+    redirect_block = CLI[CLI.index("function http_request_follow_image_redirects"):CLI.index("function fetch_subject_page")]
     download_block = CLI[CLI.index("function download_image_to_tmp"):CLI.index("function upsert_observed")]
-    assert "parse_url($url, PHP_URL_SCHEME)" in download_block
-    assert "invalid image URL scheme" in download_block
-    assert "image_request_headers($conditionalHeaders)" in download_block
+    assert "parse_url($current, PHP_URL_SCHEME)" in redirect_block
+    assert "invalid image URL scheme" in redirect_block
+    assert "image_request_headers($conditionalHeaders)" in redirect_block
+    assert "x-final-url" not in download_block

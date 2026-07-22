@@ -89,7 +89,7 @@ function cover_safe_relative_path(int $subjectId, string $path, string $subjects
 
     $quotedSubjects = preg_quote(trim($subjectsDirectory, '/'), '#');
     $quotedPrefix = preg_quote(cover_partition_prefix($subjectId, $subjectsDirectory), '#');
-    $namePattern = $subjectId . '_(?:[A-Za-z0-9_-]+)(?:--[a-f0-9]{12})?\\.(?:jpg|jpeg|png|webp)';
+    $namePattern = $subjectId . '_(?:[A-Za-z0-9_-]+)(?:--[a-f0-9]{12}|--[a-f0-9]{64})?\\.(?:jpg|jpeg|png|webp)';
     if (preg_match('#^' . $quotedPrefix . '(' . $namePattern . ')$#i', $path)) {
         return $path;
     }
