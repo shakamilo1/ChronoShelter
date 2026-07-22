@@ -44,7 +44,7 @@ function cover_existing_relative_path(string $directory, string $subjectsDirecto
     if ($safe === null) {
         return null;
     }
-    return cover_file_is_valid($directory . '/' . $safe) ? $safe : null;
+    return cover_file_is_valid($directory . '/' . $safe, $directory, $safe) ? $safe : null;
 }
 
 function cover_partition_prefix(int $subjectId, string $subjectsDirectory = 'subjects'): string
@@ -84,23 +84,40 @@ function cover_safe_relative_path(int $subjectId, string $path, string $subjects
     return null;
 }
 
-function cover_file_is_valid(string $path): bool
+function cover_file_is_valid(string $path, ?string $coversDirectory = null, ?string $relativePath = null): bool
 {
-    if (!is_file($path) || filesize($path) <= 0) {
+    if (!is_file($path) || filesize($path) < 32) {
         return false;
     }
-    $handle = fopen($path, 'rb');
-    if ($handle === false) {
+    if ($coversDirectory !== null) {
+        $coverRoot = realpath($coversDirectory);
+        $real = realpath($path);
+        if ($coverRoot === false || $real === false || !str_starts_with($real, rtrim($coverRoot, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR)) {
+            return false;
+        }
+    }
+
+    $extension = strtolower(pathinfo($relativePath ?? $path, PATHINFO_EXTENSION));
+    if ($extension === 'jpeg') {
+        $extension = 'jpg';
+    }
+    $expectedByExtension = ['jpg' => 'image/jpeg', 'png' => 'image/png', 'webp' => 'image/webp'];
+    if (!isset($expectedByExtension[$extension])) {
         return false;
     }
-    $bytes = fread($handle, 16);
-    fclose($handle);
-    if ($bytes === false) {
+
+    $finfo = new finfo(FILEINFO_MIME_TYPE);
+    $mime = $finfo->file($path);
+    if ($mime !== $expectedByExtension[$extension]) {
         return false;
     }
-    return str_starts_with($bytes, "\xFF\xD8\xFF")
-        || str_starts_with($bytes, "\x89PNG\r\n\x1A\n")
-        || (substr($bytes, 0, 4) === 'RIFF' && substr($bytes, 8, 4) === 'WEBP');
+
+    $size = @getimagesize($path);
+    if (!is_array($size) || ($size[0] ?? 0) <= 0 || ($size[1] ?? 0) <= 0) {
+        return false;
+    }
+    $mimeFromImage = $size['mime'] ?? null;
+    return $mimeFromImage === $expectedByExtension[$extension];
 }
 
 function cover_public_url(string $publicPath, string $relativePath): string

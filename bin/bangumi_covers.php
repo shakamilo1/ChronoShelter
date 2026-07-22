@@ -33,6 +33,7 @@ function cli_options(array $argv): array
         'prune-remote-missing' => false,
         'file' => null,
         'write-mysql' => false,
+        'apply' => false,
     ];
     for ($i = 2; $i < count($argv); $i++) {
         $arg = $argv[$i];
@@ -324,7 +325,7 @@ function manifest_row(int $subjectId): ?array
     return $row ?: null;
 }
 
-function local_cover_ok(?string $relativePath): bool
+function local_cover_ok(?string $relativePath, ?array $row = null): bool
 {
     if (!$relativePath) return false;
     try {
@@ -333,8 +334,20 @@ function local_cover_ok(?string $relativePath): bool
         return false;
     }
     if (!is_file($path) || filesize($path) <= 0) return false;
-    $data = file_get_contents($path, false, null, 0, 16);
-    return is_string($data) && image_type_from_bytes($data . str_repeat("\0", 16), mime_content_type($path) ?: '') !== null;
+    $data = file_get_contents($path);
+    if (!is_string($data)) return false;
+    $type = image_type_from_bytes($data, mime_content_type($path) ?: '');
+    if ($type === null) return false;
+    $extension = strtolower(pathinfo($relativePath, PATHINFO_EXTENSION));
+    if ($extension === 'jpeg') $extension = 'jpg';
+    if ($extension !== $type[1]) return false;
+    $imageSize = @getimagesize($path);
+    if (!is_array($imageSize) || ($imageSize[0] ?? 0) <= 0 || ($imageSize[1] ?? 0) <= 0) return false;
+    if ($row !== null) {
+        if (isset($row['file_size']) && $row['file_size'] !== null && (int) $row['file_size'] !== filesize($path)) return false;
+        if (!empty($row['sha256']) && hash_file('sha256', $path) !== $row['sha256']) return false;
+    }
+    return true;
 }
 
 function mark_failed(int $subjectId, string $message): void
@@ -380,10 +393,7 @@ function apply_one(int $subjectId, bool $dryRun = false): bool
                 return false;
             }
         }
-        if ($oldPath && $oldPath !== $relative) {
-            $oldAbsolute = cover_absolute_path($oldPath);
-            if (is_file($oldAbsolute)) @unlink($oldAbsolute);
-        }
+        // Keep previous cover files until an explicit cleanup-covers --apply run.
         return true;
     } catch (Throwable $exc) {
         mark_failed($subjectId, $exc->getMessage());
@@ -615,13 +625,33 @@ function export_mapping(array $options): array
     if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
         throw new RuntimeException('cannot create export directory');
     }
-    $rows = db()->query("SELECT subject_id, CASE WHEN status IN ('downloaded','unchanged','pending_deploy') THEN 'cached' ELSE status END AS status, remote_filename, downloaded_url AS source_url, relative_path AS local_path, mime_type AS content_type, file_size, sha256, COALESCE(last_downloaded_at, last_checked_at) AS updated_at FROM cover_manifest WHERE subject_type = 2 AND relative_path IS NOT NULL ORDER BY subject_id")->fetchAll(PDO::FETCH_ASSOC);
+    $rows = db()->query("SELECT subject_id, status, remote_filename, downloaded_url AS source_url, relative_path AS local_path, mime_type AS content_type, file_size, sha256, COALESCE(last_downloaded_at, last_checked_at) AS updated_at FROM cover_manifest WHERE subject_type = 2 ORDER BY subject_id")->fetchAll(PDO::FETCH_ASSOC);
     $handle = fopen((string) $file, 'wb');
     if ($handle === false) {
         throw new RuntimeException('cannot open export file');
     }
     foreach ($rows as $row) {
-        fwrite($handle, json_encode($row, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
+        $export = null;
+        if (!empty($row['local_path']) && local_cover_ok($row['local_path'], $row)) {
+            $export = $row;
+            $export['status'] = 'cached';
+        } elseif (($row['status'] ?? '') === 'no_cover' && empty($row['downloaded_url']) && empty($row['local_path'])) {
+            $export = [
+                'subject_id' => (int) $row['subject_id'],
+                'status' => 'no_cover',
+                'remote_filename' => null,
+                'source_url' => null,
+                'local_path' => null,
+                'content_type' => null,
+                'file_size' => null,
+                'sha256' => null,
+                'updated_at' => $row['updated_at'] ?? now_utc(),
+            ];
+        }
+        if ($export === null) {
+            continue;
+        }
+        fwrite($handle, json_encode($export, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
         $stats['scanned_anime']++;
     }
     fclose($handle);
@@ -631,6 +661,59 @@ function export_mapping(array $options): array
     return $stats;
 }
 
+function import_mapping_row_is_safe(array $row): array
+{
+    $subjectId = (int) ($row['subject_id'] ?? 0);
+    if ($subjectId <= 0 || (string) $subjectId !== (string) ($row['subject_id'] ?? '')) {
+        throw new RuntimeException('invalid subject_id in mapping');
+    }
+    $status = (string) ($row['status'] ?? '');
+    if (!in_array($status, ['cached', 'no_cover'], true)) {
+        throw new RuntimeException('invalid import status for subject_id=' . $subjectId);
+    }
+    if ($status === 'no_cover') {
+        return ['subject_id' => $subjectId, 'status' => 'no_cover', 'remote_filename' => null, 'source_url' => null, 'local_path' => null, 'content_type' => null, 'file_size' => null, 'sha256' => null, 'updated_at' => $row['updated_at'] ?? null];
+    }
+    $relativePath = (string) ($row['local_path'] ?? '');
+    if ($relativePath === '') {
+        throw new RuntimeException('cached mapping missing local_path for subject_id=' . $subjectId);
+    }
+    $absolute = cover_absolute_path($relativePath);
+    $root = realpath(cover_sync_paths()['covers']);
+    $real = realpath($absolute);
+    if ($root === false || $real === false || !str_starts_with($real, rtrim($root, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR)) {
+        throw new RuntimeException('mapped file is outside covers for subject_id=' . $subjectId);
+    }
+    $prefix = cover_partition_prefix($subjectId);
+    $base = basename($relativePath);
+    if (!str_starts_with($relativePath, $prefix) || !preg_match('/^' . preg_quote((string) $subjectId, '/') . '_[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$/i', $base)) {
+        throw new RuntimeException('mapped path does not match subject shard/name for subject_id=' . $subjectId);
+    }
+    if (!is_file($absolute)) {
+        throw new RuntimeException('mapped file missing for subject_id=' . $subjectId);
+    }
+    if (isset($row['file_size']) && $row['file_size'] !== null && filesize($absolute) !== (int) $row['file_size']) {
+        throw new RuntimeException('mapped file size mismatch for subject_id=' . $subjectId);
+    }
+    if (empty($row['sha256']) || hash_file('sha256', $absolute) !== $row['sha256']) {
+        throw new RuntimeException('mapped file sha256 mismatch for subject_id=' . $subjectId);
+    }
+    if (!local_cover_ok($relativePath, ['file_size' => $row['file_size'] ?? null, 'sha256' => $row['sha256'] ?? null])) {
+        throw new RuntimeException('mapped file is not a valid image for subject_id=' . $subjectId);
+    }
+    return [
+        'subject_id' => $subjectId,
+        'status' => 'cached',
+        'remote_filename' => $row['remote_filename'] ?? basename($relativePath),
+        'source_url' => $row['source_url'] ?? null,
+        'local_path' => $relativePath,
+        'content_type' => $row['content_type'] ?? mime_content_type($absolute),
+        'file_size' => filesize($absolute),
+        'sha256' => $row['sha256'],
+        'updated_at' => $row['updated_at'] ?? null,
+    ];
+}
+
 function import_mapping(array $options): array
 {
     $stats = stats_template('import-mapping');
@@ -638,36 +721,84 @@ function import_mapping(array $options): array
     if (!$file || !is_file((string) $file)) {
         throw new RuntimeException('--file is required for import-mapping');
     }
+    $rows = [];
+    $seen = [];
     $handle = fopen((string) $file, 'rb');
     if ($handle === false) {
         throw new RuntimeException('cannot open mapping file');
     }
-    $pdo = db_library();
-    $stmt = $pdo->prepare('INSERT INTO cover_cache (subject_id, status, remote_filename, source_url, local_path, content_type, file_size, sha256, updated_at)
-        VALUES (:subject_id, :status, :remote_filename, :source_url, :local_path, :content_type, :file_size, :sha256, COALESCE(:updated_at, CURRENT_TIMESTAMP))
-        ON DUPLICATE KEY UPDATE status = VALUES(status), remote_filename = VALUES(remote_filename), source_url = VALUES(source_url),
-            local_path = VALUES(local_path), content_type = VALUES(content_type), file_size = VALUES(file_size), sha256 = VALUES(sha256), updated_at = VALUES(updated_at)');
     while (($line = fgets($handle)) !== false) {
         $line = trim($line);
         if ($line === '') continue;
-        $row = json_decode($line, true);
-        if (!is_array($row)) {
+        $decoded = json_decode($line, true);
+        if (!is_array($decoded)) {
+            fclose($handle);
             throw new RuntimeException('invalid mapping JSON line');
         }
-        $stmt->execute([
-            'subject_id' => (int) $row['subject_id'],
-            'status' => (string) ($row['status'] ?? 'cached'),
-            'remote_filename' => $row['remote_filename'] ?? null,
-            'source_url' => $row['source_url'] ?? null,
-            'local_path' => $row['local_path'] ?? null,
-            'content_type' => $row['content_type'] ?? null,
-            'file_size' => $row['file_size'] ?? null,
-            'sha256' => $row['sha256'] ?? null,
-            'updated_at' => $row['updated_at'] ?? null,
-        ]);
-        $stats['update_success']++;
+        $row = import_mapping_row_is_safe($decoded);
+        if (isset($seen[$row['subject_id']])) {
+            fclose($handle);
+            throw new RuntimeException('duplicate subject_id in mapping: ' . $row['subject_id']);
+        }
+        $seen[$row['subject_id']] = true;
+        $rows[] = $row;
     }
     fclose($handle);
+
+    $pdo = db_library();
+    $pdo->beginTransaction();
+    try {
+        $stmt = $pdo->prepare('INSERT INTO cover_cache (subject_id, status, remote_filename, source_url, local_path, content_type, file_size, sha256, updated_at)
+            VALUES (:subject_id, :status, :remote_filename, :source_url, :local_path, :content_type, :file_size, :sha256, COALESCE(:updated_at, CURRENT_TIMESTAMP))
+            ON DUPLICATE KEY UPDATE status = IF(VALUES(status) = \'no_cover\' AND status = \'cached\', status, VALUES(status)),
+                remote_filename = IF(VALUES(status) = \'no_cover\' AND status = \'cached\', remote_filename, VALUES(remote_filename)),
+                source_url = IF(VALUES(status) = \'no_cover\' AND status = \'cached\', source_url, VALUES(source_url)),
+                local_path = IF(VALUES(status) = \'no_cover\' AND status = \'cached\', local_path, VALUES(local_path)),
+                content_type = IF(VALUES(status) = \'no_cover\' AND status = \'cached\', content_type, VALUES(content_type)),
+                file_size = IF(VALUES(status) = \'no_cover\' AND status = \'cached\', file_size, VALUES(file_size)),
+                sha256 = IF(VALUES(status) = \'no_cover\' AND status = \'cached\', sha256, VALUES(sha256)), updated_at = VALUES(updated_at)');
+        foreach ($rows as $row) {
+            $stmt->execute($row);
+            $stats['update_success']++;
+        }
+        $pdo->commit();
+    } catch (Throwable $exc) {
+        $pdo->rollBack();
+        throw $exc;
+    }
+    $stats['complete'] = true;
+    return $stats;
+}
+
+function cleanup_covers(array $options): array
+{
+    $stats = stats_template('cleanup-covers');
+    $root = cover_sync_paths()['covers'];
+    $subjects = $root . '/subjects';
+    $referenced = [];
+    foreach (db()->query("SELECT relative_path FROM cover_manifest WHERE subject_type = 2 AND relative_path IS NOT NULL") as $row) {
+        $referenced[(string) $row['relative_path']] = true;
+    }
+    if (!is_dir($subjects)) {
+        $stats['complete'] = true;
+        return $stats;
+    }
+    $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($subjects, FilesystemIterator::SKIP_DOTS));
+    foreach ($iterator as $fileInfo) {
+        if (!$fileInfo->isFile()) continue;
+        $path = $fileInfo->getPathname();
+        $relative = str_replace('\\', '/', substr($path, strlen(rtrim($root, DIRECTORY_SEPARATOR)) + 1));
+        if (isset($referenced[$relative])) continue;
+        if (!preg_match('#^subjects/[0-9]{3,}/[0-9]{3}/[0-9]+_[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$#i', $relative)) continue;
+        echo "cleanup_candidate: {$relative}\n";
+        $stats['scanned_anime']++;
+        if ((bool) $options['apply']) {
+            if (!unlink($path)) {
+                throw new RuntimeException('cannot delete cleanup candidate: ' . $relative);
+            }
+            $stats['update_success']++;
+        }
+    }
     $stats['complete'] = true;
     return $stats;
 }
@@ -681,7 +812,7 @@ function print_stats(array $stats): void
 
 function usage(): void
 {
-    echo "Usage: php bin/bangumi_covers.php <sync|check-updates|apply-updates|retry-failed|verify-files|deep-check|export-mapping|import-mapping> [options]\n";
+    echo "Usage: php bin/bangumi_covers.php <sync|check-updates|apply-updates|retry-failed|verify-files|deep-check|export-mapping|import-mapping|cleanup-covers> [options]\n";
     echo "All Bangumi subject scans are fixed to type=2, limit=100, images.large only.\n";
 }
 
@@ -698,6 +829,7 @@ try {
         'deep-check' => print_stats(deep_check($options)),
         'export-mapping' => print_stats(export_mapping($options)),
         'import-mapping' => print_stats(import_mapping($options)),
+        'cleanup-covers' => print_stats(cleanup_covers($options)),
         default => usage(),
     };
 } catch (Throwable $exc) {

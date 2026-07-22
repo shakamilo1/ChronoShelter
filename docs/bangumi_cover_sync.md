@@ -189,3 +189,8 @@ var/cover-sync/covers.sqlite
 ## 映射导出和正式部署
 
 下载机器和正式服务器可能不是同一台机器。默认离线同步只写 SQLite 清单并把新下载记录保留为 `pending_deploy`，不要求也不强制连接生产 MariaDB；只有明确传入 `--write-mysql` 时才会尝试直接写 `cover_cache`，失败才会标记 `mapping_failed`。完成离线同步后，先复制 `covers/subjects/` 中新增/更新的文件到正式服务器，再运行 `php bin/bangumi_covers.php export-mapping --file=var/cover-sync/reports/cover-mapping.jsonl` 导出映射，并在正式服务器运行 `php bin/bangumi_covers.php import-mapping --file=cover-mapping.jsonl` 导入 `cover_cache`。不能只复制图片而不复制数据库映射；网页只根据 `cover_cache.local_path` 显示封面，网页本身永远不访问 Bangumi。确认网页使用新路径后，最后再清理不再被映射引用的旧文件。
+
+
+### 封面清理安全规则
+
+同步程序不会在新封面下载成功、SQLite 更新、MariaDB 写入或 import-mapping 时自动删除旧封面。失败的 `pending_update`、`failed`、`mapping_failed`、`remote_missing` 不会污染网站当前 `cached` 映射；只要旧文件仍有效，export-mapping 会继续导出旧封面。需要清理时先运行 `php bin/bangumi_covers.php cleanup-covers` 查看 dry-run 候选；只有用户确认后才可显式追加 `--apply` 删除未被映射引用且通过安全校验的 `covers/subjects/` 文件。

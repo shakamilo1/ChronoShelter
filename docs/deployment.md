@@ -255,3 +255,8 @@ ON `subjects` (`type`, `name`(191), `name_cn`(191));
 ```
 
 不要改回完整 `name` / `name_cn` 联合索引，否则部分 MySQL/MariaDB 环境会因 key length 超过 3072 bytes 而导入失败。
+
+
+### 封面清理安全规则
+
+同步程序不会在新封面下载成功、SQLite 更新、MariaDB 写入或 import-mapping 时自动删除旧封面。失败的 `pending_update`、`failed`、`mapping_failed`、`remote_missing` 不会污染网站当前 `cached` 映射；只要旧文件仍有效，export-mapping 会继续导出旧封面。需要清理时先运行 `php bin/bangumi_covers.php cleanup-covers` 查看 dry-run 候选；只有用户确认后才可显式追加 `--apply` 删除未被映射引用且通过安全校验的 `covers/subjects/` 文件。

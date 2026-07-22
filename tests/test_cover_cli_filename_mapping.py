@@ -31,8 +31,8 @@ def test_cli_supports_mapping_export_and_import():
     assert "cover-mapping-" in CLI
 
 
-def test_export_mapping_converts_downloaded_manifest_to_cached_cover_cache_status():
-    assert "THEN 'cached'" in CLI
+def test_export_mapping_converts_successful_manifest_file_to_cached_cover_cache_status():
+    assert "$export['status'] = 'cached'" in CLI
     assert "downloaded_url AS source_url" in CLI
     assert "relative_path AS local_path" in CLI
 
@@ -53,10 +53,39 @@ def test_mapping_failed_only_when_explicit_mysql_write_requested():
 
 
 def test_export_mapping_converts_pending_deploy_to_cached_cover_cache_status():
-    assert "'downloaded','unchanged','pending_deploy'" in CLI
-    assert "THEN 'cached'" in CLI
+    assert "local_cover_ok($row['local_path'], $row)" in CLI
+    assert "$export['status'] = 'cached'" in CLI
 
 
-def test_import_mapping_defaults_to_cached_status():
-    assert "'status' => (string) ($row['status'] ?? 'cached')" in CLI
+def test_import_mapping_writes_cached_status_for_cached_rows():
+    assert "'status' => 'cached'" in CLI
     assert "INSERT INTO cover_cache" in CLI
+
+
+def test_export_mapping_uses_valid_existing_success_file_for_transient_statuses():
+    assert "local_cover_ok($row['local_path'], $row)" in CLI
+    assert "$export['status'] = 'cached'" in CLI
+    assert "pending_update" not in CLI[CLI.index("function export_mapping"):CLI.index("function import_mapping_row_is_safe")]
+    assert "remote_missing" not in CLI[CLI.index("function export_mapping"):CLI.index("function import_mapping_row_is_safe")]
+
+
+def test_apply_one_never_deletes_old_cover_files_automatically():
+    apply_block = CLI[CLI.index("function apply_one"):CLI.index("function sync_mysql_cover_cache")]
+    assert "unlink($oldAbsolute)" not in apply_block
+    assert "Keep previous cover files" in apply_block
+
+
+def test_import_mapping_prechecks_before_transaction_and_rolls_back():
+    import_block = CLI[CLI.index("function import_mapping"):CLI.index("function cleanup_covers")]
+    assert "import_mapping_row_is_safe" in CLI
+    assert "beginTransaction()" in import_block
+    assert "rollBack()" in import_block
+    assert import_block.index("import_mapping_row_is_safe") < import_block.index("beginTransaction()")
+    assert "duplicate subject_id" in import_block
+    assert "no_cover" in import_block
+
+
+def test_cleanup_covers_is_dry_run_unless_apply_is_explicit():
+    cleanup_block = CLI[CLI.index("function cleanup_covers"):CLI.index("function print_stats")]
+    assert "cleanup_candidate" in cleanup_block
+    assert "if ((bool) $options['apply'])" in cleanup_block
