@@ -210,6 +210,8 @@ data/
 mysql -u root -p chrono_bangumi < sql/migrations/004_add_subjects_pagination_indexes.sql
 ```
 
+部署检查会同时检查上述两个分页索引，缺少时会提示执行 `sql/migrations/004_add_subjects_pagination_indexes.sql`。
+
 该迁移只新增 `idx_subjects_type_date_id (type, date, id)` 和保留未来评分排序用的 `idx_subjects_type_score_id (type, score, id)`，不需要重建数据库、不修改 `chrono_library` 私人收藏、不修改封面文件。首页默认 `date DESC, id DESC`，先用索引确定当前页 ID，再读取 50 条完整记录并关联封面/收藏，避免依赖 MariaDB 查询缓存掩盖慢查询。未来新增名称、NSFW、标签筛选时，条件必须放进内层分页查询并同步到 `count_anime()`；`meta_tags` JSON 不应直接建立普通 B-tree 索引。
 
 ## 12. 动画封面离线同步
@@ -238,6 +240,8 @@ php bin/bangumi_covers.php deep-check --sample=100
 php bin/bangumi_covers.php export-mapping --file=var/cover-sync/reports/cover-mapping.jsonl
 php bin/bangumi_covers.php import-mapping --file=cover-mapping.jsonl
 ```
+
+离线封面同步默认不连接生产 MariaDB，下载完成后记录为 `pending_deploy` 并通过 `export-mapping` 导出；先复制图片到正式服务器，再运行 `import-mapping` 更新 `cover_cache`。只有明确传入 `--write-mysql` 时才直接写 MariaDB，失败才视为 `mapping_failed`。
 
 运行数据在非公开目录 `var/cover-sync/`，正式图片在 `covers/subjects/`，文件名保留 Bangumi `images.large` URL 的安全 basename，例如 `covers/subjects/000/001/1234_Ewjo.jpg`。正式服务器必须同时部署/同步 `covers/subjects/`、确保本地存在 `covers/logo.png`，并导入最新 `cover_cache.local_path` 映射；单独的 `var/cover-sync/covers.sqlite` 可只保留在维护机器。详见 `docs/bangumi_cover_sync.md`。
 

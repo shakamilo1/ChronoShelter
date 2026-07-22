@@ -56,3 +56,19 @@ function column_exists(PDO $db, string $database, string $table, string $column)
     $stmt->execute(['db' => $database, 'table' => $table, 'column' => $column]);
     return (int) $stmt->fetchColumn() > 0;
 }
+
+function required_indexes(): array
+{
+    return [
+        'public' => [
+            'subjects' => ['idx_subjects_type_date_id', 'idx_subjects_type_score_id'],
+        ],
+    ];
+}
+
+function index_exists(PDO $db, string $database, string $table, string $index): bool
+{
+    $stmt = $db->prepare('SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = :db AND table_name = :table AND index_name = :index');
+    $stmt->execute(['db' => $database, 'table' => $table, 'index' => $index]);
+    return (int) $stmt->fetchColumn() > 0;
+}

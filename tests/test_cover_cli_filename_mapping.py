@@ -35,3 +35,28 @@ def test_export_mapping_converts_downloaded_manifest_to_cached_cover_cache_statu
     assert "THEN 'cached'" in CLI
     assert "downloaded_url AS source_url" in CLI
     assert "relative_path AS local_path" in CLI
+
+
+def test_offline_download_does_not_require_mysql_by_default():
+    assert "'write-mysql' => false" in CLI
+    apply_block = CLI[CLI.index("function apply_one"):CLI.index("function sync_mysql_cover_cache")]
+    assert "pending_deploy" in apply_block
+    assert "if ((bool) $GLOBALS['cover_sync_options']['write-mysql'])" in apply_block
+    assert "sync_mysql_cover_cache" in apply_block
+
+
+def test_mapping_failed_only_when_explicit_mysql_write_requested():
+    apply_block = CLI[CLI.index("function apply_one"):CLI.index("function sync_mysql_cover_cache")]
+    mapping_failed_pos = apply_block.index("mapping_failed")
+    write_mysql_pos = apply_block.index("write-mysql")
+    assert write_mysql_pos < mapping_failed_pos
+
+
+def test_export_mapping_converts_pending_deploy_to_cached_cover_cache_status():
+    assert "'downloaded','unchanged','pending_deploy'" in CLI
+    assert "THEN 'cached'" in CLI
+
+
+def test_import_mapping_defaults_to_cached_status():
+    assert "'status' => (string) ($row['status'] ?? 'cached')" in CLI
+    assert "INSERT INTO cover_cache" in CLI

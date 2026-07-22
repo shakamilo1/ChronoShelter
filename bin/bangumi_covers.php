@@ -32,6 +32,7 @@ function cli_options(array $argv): array
         'confirm-all' => false,
         'prune-remote-missing' => false,
         'file' => null,
+        'write-mysql' => false,
     ];
     for ($i = 2; $i < count($argv); $i++) {
         $arg = $argv[$i];
@@ -366,14 +367,18 @@ function apply_one(int $subjectId, bool $dryRun = false): bool
         }
         $stmt = db()->prepare('UPDATE cover_manifest SET downloaded_url = observed_url, remote_filename = :remote_filename, relative_path = :path, mime_type = :mime,
             file_extension = :ext, file_size = :size, sha256 = :sha, etag = :etag, last_modified = :lm,
-            last_downloaded_at = :downloaded, last_checked_at = :checked, status = \'downloaded\', error_message = NULL WHERE subject_id = :id');
-        $stmt->execute(['remote_filename' => $remoteFilename, 'path' => $relative, 'mime' => $meta['mime_type'], 'ext' => $meta['extension'], 'size' => $meta['file_size'], 'sha' => $meta['sha256'], 'etag' => $meta['etag'], 'lm' => $meta['last_modified'], 'downloaded' => now_utc(), 'checked' => now_utc(), 'id' => $subjectId]);
-        try {
-            sync_mysql_cover_cache($subjectId, 'cached', $remoteFilename, (string) $row['observed_url'], $relative, null, $meta);
-        } catch (Throwable $mappingError) {
-            db()->prepare("UPDATE cover_manifest SET status = 'mapping_failed', error_message = :error, last_checked_at = :checked WHERE subject_id = :id")
-                ->execute(['error' => mb_substr('cover_cache mapping failed: ' . $mappingError->getMessage(), 0, 1000), 'checked' => now_utc(), 'id' => $subjectId]);
-            return false;
+            last_downloaded_at = :downloaded, last_checked_at = :checked, status = :status, error_message = NULL WHERE subject_id = :id');
+        $stmt->execute(['status' => ((bool) $GLOBALS['cover_sync_options']['write-mysql'] ? 'downloaded' : 'pending_deploy'), 'remote_filename' => $remoteFilename, 'path' => $relative, 'mime' => $meta['mime_type'], 'ext' => $meta['extension'], 'size' => $meta['file_size'], 'sha' => $meta['sha256'], 'etag' => $meta['etag'], 'lm' => $meta['last_modified'], 'downloaded' => now_utc(), 'checked' => now_utc(), 'id' => $subjectId]);
+        if ((bool) $GLOBALS['cover_sync_options']['write-mysql']) {
+            try {
+                sync_mysql_cover_cache($subjectId, 'cached', $remoteFilename, (string) $row['observed_url'], $relative, null, $meta);
+                db()->prepare("UPDATE cover_manifest SET status = 'downloaded', last_checked_at = :checked WHERE subject_id = :id")
+                    ->execute(['checked' => now_utc(), 'id' => $subjectId]);
+            } catch (Throwable $mappingError) {
+                db()->prepare("UPDATE cover_manifest SET status = 'mapping_failed', error_message = :error, last_checked_at = :checked WHERE subject_id = :id")
+                    ->execute(['error' => mb_substr('cover_cache mapping failed: ' . $mappingError->getMessage(), 0, 1000), 'checked' => now_utc(), 'id' => $subjectId]);
+                return false;
+            }
         }
         if ($oldPath && $oldPath !== $relative) {
             $oldAbsolute = cover_absolute_path($oldPath);
@@ -382,11 +387,13 @@ function apply_one(int $subjectId, bool $dryRun = false): bool
         return true;
     } catch (Throwable $exc) {
         mark_failed($subjectId, $exc->getMessage());
-        try {
-            sync_mysql_cover_cache($subjectId, 'failed', $row['remote_filename'] ?? null, $row['observed_url'] ?? null, $oldPath, $exc->getMessage(), []);
-        } catch (Throwable $mappingError) {
-            db()->prepare('UPDATE cover_manifest SET error_message = :error, last_checked_at = :checked WHERE subject_id = :id')
-                ->execute(['error' => mb_substr($exc->getMessage() . '; cover_cache failure mapping failed: ' . $mappingError->getMessage(), 0, 1000), 'checked' => now_utc(), 'id' => $subjectId]);
+        if ((bool) $GLOBALS['cover_sync_options']['write-mysql']) {
+            try {
+                sync_mysql_cover_cache($subjectId, 'failed', $row['remote_filename'] ?? null, $row['observed_url'] ?? null, $oldPath, $exc->getMessage(), []);
+            } catch (Throwable $mappingError) {
+                db()->prepare('UPDATE cover_manifest SET error_message = :error, last_checked_at = :checked WHERE subject_id = :id')
+                    ->execute(['error' => mb_substr($exc->getMessage() . '; cover_cache failure mapping failed: ' . $mappingError->getMessage(), 0, 1000), 'checked' => now_utc(), 'id' => $subjectId]);
+            }
         }
         return false;
     }
@@ -608,7 +615,7 @@ function export_mapping(array $options): array
     if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
         throw new RuntimeException('cannot create export directory');
     }
-    $rows = db()->query("SELECT subject_id, CASE WHEN status IN ('downloaded','unchanged') THEN 'cached' ELSE status END AS status, remote_filename, downloaded_url AS source_url, relative_path AS local_path, mime_type AS content_type, file_size, sha256, COALESCE(last_downloaded_at, last_checked_at) AS updated_at FROM cover_manifest WHERE subject_type = 2 AND relative_path IS NOT NULL ORDER BY subject_id")->fetchAll(PDO::FETCH_ASSOC);
+    $rows = db()->query("SELECT subject_id, CASE WHEN status IN ('downloaded','unchanged','pending_deploy') THEN 'cached' ELSE status END AS status, remote_filename, downloaded_url AS source_url, relative_path AS local_path, mime_type AS content_type, file_size, sha256, COALESCE(last_downloaded_at, last_checked_at) AS updated_at FROM cover_manifest WHERE subject_type = 2 AND relative_path IS NOT NULL ORDER BY subject_id")->fetchAll(PDO::FETCH_ASSOC);
     $handle = fopen((string) $file, 'wb');
     if ($handle === false) {
         throw new RuntimeException('cannot open export file');
@@ -679,6 +686,7 @@ function usage(): void
 }
 
 [$command, $options] = cli_options($argv);
+$GLOBALS['cover_sync_options'] = $options;
 try {
     ensure_runtime_dirs();
     match ($command) {

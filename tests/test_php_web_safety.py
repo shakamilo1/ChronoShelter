@@ -76,3 +76,14 @@ def test_install_check_requires_cover_cache_mapping_columns():
     assert "source_url" in install
     assert "sha256" in install
     assert "column_exists" in check
+
+
+def test_install_check_requires_homepage_pagination_indexes():
+    install = (ROOT / "includes" / "install.php").read_text(encoding="utf-8")
+    check = (ROOT / "install_check.php").read_text(encoding="utf-8")
+
+    assert "required_indexes" in install
+    assert "idx_subjects_type_date_id" in install
+    assert "idx_subjects_type_score_id" in install
+    assert "index_exists" in check
+    assert "004_add_subjects_pagination_indexes.sql" in check

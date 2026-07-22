@@ -33,6 +33,13 @@ try {
             }
         }
     }
+    foreach (required_indexes()['public'] ?? [] as $table => $indexes) {
+        foreach ($indexes as $index) {
+            if (!index_exists($public, public_database_name(), $table, $index)) {
+                $missing[] = public_database_name() . '.' . $table . '.' . $index . ' (run sql/migrations/004_add_subjects_pagination_indexes.sql)';
+            }
+        }
+    }
     $schemaOk = $missing === [];
     $checks[] = ['Schema', $schemaOk, $schemaOk ? 'all required tables and columns exist' : 'missing: ' . implode(', ', $missing)];
 } catch (Throwable $error) {
@@ -53,6 +60,7 @@ require __DIR__ . '/templates/header.php';
 <?php if (!$schemaOk): ?>
 <section class="setup-error"><h2>初始化提示</h2><pre>mysql -u root -p chrono_bangumi &lt; database/chrono_bangumi_schema.sql
 mysql -u root -p chrono_library &lt; database/chrono_library_schema.sql
-mysql -u root -p chrono_library &lt; sql/migrations/003_cover_cache_mapping_columns.sql</pre></section>
+mysql -u root -p chrono_library &lt; sql/migrations/003_cover_cache_mapping_columns.sql
+mysql -u root -p chrono_bangumi &lt; sql/migrations/004_add_subjects_pagination_indexes.sql</pre></section>
 <?php endif; ?>
 <?php require __DIR__ . '/templates/footer.php'; ?>
