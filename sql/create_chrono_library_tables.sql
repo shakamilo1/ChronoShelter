@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS `collections` (
 CREATE TABLE IF NOT EXISTS `cover_cache` (
   `subject_id` INT UNSIGNED NOT NULL COMMENT 'Cover cache status for a Bangumi subject image',
   `status` VARCHAR(32) NOT NULL DEFAULT 'missing' COMMENT 'missing, cached, failed, invalid',
-  `local_path` VARCHAR(512) NULL COMMENT 'covers/{subject_id}.jpg when cached',
+  `local_path` VARCHAR(512) NULL COMMENT 'subjects/{level1}/{level2}/{subject_id}.{ext} relative to covers/ when cached',
   `error` TEXT NULL,
   `http_status` SMALLINT UNSIGNED NULL,
   `content_type` VARCHAR(128) NULL,

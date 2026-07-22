@@ -181,7 +181,7 @@ CHRONOSHELTER_LIBRARY_DB_NAME=chrono_library
 网页请求只读取本地目录中的封面：
 
 ```text
-covers/{subject_id}.jpg
+covers/subjects/{level1}/{level2}/{subject_id}.{ext}
 ```
 
 本地占位图在 `config/config.php` 中配置：
@@ -195,7 +195,7 @@ covers/{subject_id}.jpg
 ],
 ```
 
-页面优先显示分片目录中的本地封面，例如 `covers/subjects/000/491/491569.jpg`；条目封面不存在、为空或损坏时立即显示 `covers/logo.png`。如果配置的占位图也不存在，则退回 `static/img/placeholder.svg`。PHP 页面不会访问 Bangumi、不会在渲染期间下载封面，也不会因为外部站点不可达而等待超时。
+页面优先显示分片目录中的本地封面，扩展名由真实图片格式决定并支持 `jpg`、`png`、`webp`，例如 `covers/subjects/000/491/491569.jpg`；条目封面不存在、为空或损坏时立即显示 `covers/logo.png`。如果配置的占位图也不存在，则退回 `static/img/placeholder.svg`。PHP 页面不会访问 Bangumi、不会在渲染期间下载封面，也不会因为外部站点不可达而等待超时。
 
 动画封面只通过 PHP CLI 离线同步工具维护，详见 [`docs/bangumi_cover_sync.md`](docs/bangumi_cover_sync.md)。需要补充条目封面时，应在能够访问 Bangumi 的独立维护环境中运行 `php bin/bangumi_covers.php sync --resume`，再把 `covers/subjects/` 同步到 NAS，并在 NAS 本地准备 `covers/logo.png`；不要从网页请求触发下载。
 
