@@ -88,4 +88,32 @@ def test_import_mapping_prechecks_before_transaction_and_rolls_back():
 def test_cleanup_covers_is_dry_run_unless_apply_is_explicit():
     cleanup_block = CLI[CLI.index("function cleanup_covers"):CLI.index("function print_stats")]
     assert "cleanup_candidate" in cleanup_block
-    assert "if ((bool) $options['apply'])" in cleanup_block
+    assert "cleanup-covers --apply is disabled" in cleanup_block
+    assert "unlink(" not in cleanup_block
+
+
+def test_official_api_limit_and_paged_subject_validation():
+    assert "const PAGE_LIMIT = 50" in CLI
+    assert "total" in CLI and "offset" in CLI and "data" in CLI
+    assert "Bangumi API returned empty data before total was reached" in CLI
+    assert "Bangumi API returned unexpected offset" in CLI
+
+
+def test_no_icon_subject_is_treated_as_no_cover_without_binary_name_search():
+    assert "function subject_large_image_url" in CLI
+    assert "no_icon_subject.png" in CLI
+    assert "str_contains($data, 'no_icon_subject')" not in CLI
+
+
+def test_resume_cursor_advances_per_consumed_api_record():
+    scan_block = CLI[CLI.index("function scan_pages"):CLI.index("function write_report")]
+    assert "$offset++;" in scan_block
+    assert "update_run($run['run_id'], $offset, $total, 'running')" in scan_block
+    assert "PAGE_LIMIT" not in scan_block.split("$offset++;")[-1].split("update_run")[0]
+
+
+def test_versioned_local_filename_for_same_remote_name_different_sha():
+    apply_block = CLI[CLI.index("function apply_one"):CLI.index("function sync_mysql_cover_cache")]
+    assert "--' . substr($meta['sha256'], 0, 12)" in apply_block
+    assert "$existingSha === $meta['sha256']" in apply_block
+    assert "(?:--[a-f0-9]{12})?" in CLI

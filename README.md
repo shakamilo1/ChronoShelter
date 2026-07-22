@@ -336,7 +336,7 @@ CHRONOSHELTER_AUTH_PASSWORD_HASH='password_hash 输出值'
 
 ## 封面批量下载工具
 
-网页浏览不会联网补齐封面。只有在当前维护环境能够访问 Bangumi 时，才可手动运行离线 PHP CLI 工具。该工具固定只扫描 `type=2` 动画，使用 Bangumi 批量接口、`limit=100`、`images.large`，并把封面保存到 `covers/subjects/` 两级分片目录。
+网页浏览不会联网补齐封面。只有在当前维护环境能够访问 Bangumi 时，才可手动运行离线 PHP CLI 工具。该工具固定只扫描 `type=2` 动画，使用 Bangumi 批量接口、`limit=50`、`images.large`，并把封面保存到 `covers/subjects/` 两级分片目录。
 
 小规模验证：
 
@@ -379,4 +379,4 @@ php bin/bangumi_covers.php retry-failed
 
 ### 封面清理安全规则
 
-同步程序不会在新封面下载成功、SQLite 更新、MariaDB 写入或 import-mapping 时自动删除旧封面。失败的 `pending_update`、`failed`、`mapping_failed`、`remote_missing` 不会污染网站当前 `cached` 映射；只要旧文件仍有效，export-mapping 会继续导出旧封面。需要清理时先运行 `php bin/bangumi_covers.php cleanup-covers` 查看 dry-run 候选；只有用户确认后才可显式追加 `--apply` 删除未被映射引用且通过安全校验的 `covers/subjects/` 文件。
+同步程序不会在新封面下载成功、SQLite 更新、MariaDB 写入或 import-mapping 时自动删除旧封面。失败的 `pending_update`、`failed`、`mapping_failed`、`remote_missing` 不会污染网站当前 `cached` 映射；只要旧文件仍有效，export-mapping 会继续导出旧封面。需要清理时先运行 `php bin/bangumi_covers.php cleanup-covers` 查看 dry-run 候选；当前 `--apply` 会拒绝执行并返回 2，直到实现可靠的生产 `cover_cache` 引用或可信活动映射快照校验后才允许真实删除。

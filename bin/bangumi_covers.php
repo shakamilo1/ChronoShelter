@@ -3,10 +3,10 @@
 
 declare(strict_types=1);
 
-const BANGUMI_COVER_USER_AGENT = 'shakamilo1/chronoshelter-cover-archive/1.0';
+const BANGUMI_COVER_USER_AGENT = 'shakamilo1/ChronoShelter-cover-sync/1.0 (https://github.com/shakamilo1/ChronoShelter)';
 const BANGUMI_SUBJECTS_API = 'https://api.bgm.tv/v0/subjects';
 const SUBJECT_TYPE_ANIME = 2;
-const PAGE_LIMIT = 100;
+const PAGE_LIMIT = 50;
 const STATUSES = ['pending', 'downloading', 'downloaded', 'unchanged', 'pending_update', 'no_cover', 'remote_missing', 'failed', 'mapping_failed', 'pending_deploy'];
 
 $root = dirname(__DIR__);
@@ -165,7 +165,7 @@ function safe_remote_filename(int $subjectId, string $url, string $detectedExten
 
 function cover_relative_path(int $subjectId, string $filename): string
 {
-    if ($subjectId <= 0 || !preg_match('/^' . preg_quote((string) $subjectId, '/') . '_[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$/i', $filename)) {
+    if ($subjectId <= 0 || !preg_match('/^' . preg_quote((string) $subjectId, '/') . '_[A-Za-z0-9_-]+(?:--[a-f0-9]{12})?\.(jpg|jpeg|png|webp)$/i', $filename)) {
         throw new InvalidArgumentException('invalid cover filename');
     }
     return cover_partition_prefix($subjectId) . $filename;
@@ -173,16 +173,16 @@ function cover_relative_path(int $subjectId, string $filename): string
 
 function cover_absolute_path(string $relativePath): string
 {
-    if (!preg_match('#^subjects/[0-9]{3,}/[0-9]{3}/[0-9]+_[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$#i', $relativePath)
+    if (!preg_match('#^subjects/[0-9]{3,}/[0-9]{3}/[0-9]+_[A-Za-z0-9_-]+(?:--[a-f0-9]{12})?\.(jpg|jpeg|png|webp)$#i', $relativePath)
         && !preg_match('#^[0-9]+\.(jpg|jpeg|png|webp)$#i', $relativePath)) {
         throw new InvalidArgumentException('unsafe relative cover path');
     }
     return cover_sync_paths()['covers'] . '/' . $relativePath;
 }
 
-function request_headers(array $extra = []): array
+function request_headers(array $extra = [], string $accept = 'application/json'): array
 {
-    $headers = ['User-Agent: ' . BANGUMI_COVER_USER_AGENT, 'Accept: application/json'];
+    $headers = ['User-Agent: ' . BANGUMI_COVER_USER_AGENT, 'Accept: ' . $accept];
     $token = getenv('BANGUMI_ACCESS_TOKEN') ?: '';
     if ($token !== '') {
         $headers[] = 'Authorization: Bearer ' . $token;
@@ -230,16 +230,52 @@ function http_request(string $url, array $headers, int $timeout = 30, int $maxRe
 
 function fetch_subject_page(int $offset): array
 {
+    if ($offset < 0) {
+        throw new InvalidArgumentException('Bangumi API offset must be non-negative');
+    }
     $url = BANGUMI_SUBJECTS_API . '?type=' . SUBJECT_TYPE_ANIME . '&limit=' . PAGE_LIMIT . '&offset=' . $offset;
-    $response = http_request($url, request_headers());
+    $response = http_request($url, request_headers([], 'application/json'));
     if (($response['status'] ?? 0) !== 200) {
         throw new RuntimeException('Bangumi API failed: HTTP ' . ($response['status'] ?? 0));
     }
     $json = json_decode((string) $response['body'], true);
-    if (!is_array($json)) {
-        throw new RuntimeException('Bangumi API JSON parse failed');
+    if (!is_array($json) || array_is_list($json)) {
+        throw new RuntimeException('Bangumi API JSON parse failed or returned non-object');
+    }
+    foreach (['total', 'limit', 'offset'] as $key) {
+        if (!isset($json[$key]) || !is_int($json[$key]) || $json[$key] < 0) {
+            throw new RuntimeException('Bangumi API page field invalid: ' . $key);
+        }
+    }
+    if ($json['limit'] < 1 || $json['limit'] > PAGE_LIMIT) {
+        throw new RuntimeException('Bangumi API returned unsupported limit');
+    }
+    if ($json['offset'] !== $offset) {
+        throw new RuntimeException('Bangumi API returned unexpected offset');
+    }
+    if (!isset($json['data']) || !is_array($json['data'])) {
+        throw new RuntimeException('Bangumi API data field invalid');
+    }
+    if ($offset < $json['total'] && count($json['data']) === 0) {
+        throw new RuntimeException('Bangumi API returned empty data before total was reached');
     }
     return $json;
+}
+
+function subject_large_image_url(array $item): ?string
+{
+    if (!isset($item['images']) || !is_array($item['images'])) {
+        return null;
+    }
+    $url = $item['images']['large'] ?? null;
+    if (!is_string($url) || trim($url) === '') {
+        return null;
+    }
+    $path = parse_url($url, PHP_URL_PATH);
+    if (is_string($path) && basename($path) === 'no_icon_subject.png') {
+        return null;
+    }
+    return $url;
 }
 
 function image_type_from_bytes(string $data, string $contentType): ?array
@@ -253,14 +289,14 @@ function image_type_from_bytes(string $data, string $contentType): ?array
 
 function validate_image_file(string $path, string $contentType): array
 {
-    if (!is_file($path) || filesize($path) <= 0) {
-        throw new RuntimeException('downloaded file is empty');
+    if (!is_file($path) || filesize($path) < 32 || filesize($path) > 20 * 1024 * 1024) {
+        throw new RuntimeException('downloaded file size is invalid');
     }
     $data = file_get_contents($path);
     if ($data === false) {
         throw new RuntimeException('cannot read downloaded file');
     }
-    $prefix = ltrim(substr($data, 0, 32));
+    $prefix = ltrim(substr($data, 0, 64));
     if (str_starts_with($prefix, '<') || str_starts_with($prefix, '{') || str_starts_with($prefix, '[')) {
         throw new RuntimeException('downloaded content is not an image');
     }
@@ -268,8 +304,14 @@ function validate_image_file(string $path, string $contentType): array
     if ($type === null) {
         throw new RuntimeException('unsupported or mismatched image type: ' . $contentType);
     }
-    if (str_contains($data, 'no_icon_subject')) {
-        throw new RuntimeException('Bangumi no-icon placeholder rejected');
+    $finfo = new finfo(FILEINFO_MIME_TYPE);
+    $detectedMime = $finfo->file($path);
+    if ($detectedMime !== $type[0]) {
+        throw new RuntimeException('finfo MIME does not match image type');
+    }
+    $imageSize = @getimagesize($path);
+    if (!is_array($imageSize) || ($imageSize[0] ?? 0) <= 0 || ($imageSize[1] ?? 0) <= 0 || ($imageSize['mime'] ?? null) !== $type[0]) {
+        throw new RuntimeException('downloaded image structure is invalid');
     }
     return ['mime_type' => $type[0], 'extension' => $type[1], 'file_size' => filesize($path), 'sha256' => hash_file('sha256', $path)];
 }
@@ -278,12 +320,17 @@ function download_image_to_tmp(int $subjectId, string $url, array $conditionalHe
 {
     $tmp = cover_sync_paths()['tmp'] . '/' . $subjectId . '.part';
     @unlink($tmp);
-    $response = http_request($url, request_headers($conditionalHeaders), 45);
+    $response = http_request($url, request_headers($conditionalHeaders, 'image/avif,image/webp,image/png,image/jpeg,*/*;q=0.8'), 45);
     if (($response['status'] ?? 0) === 304) {
         return ['not_modified' => true, 'headers' => $response['headers'] ?? []];
     }
     if (($response['status'] ?? 0) !== 200) {
         throw new RuntimeException('image download failed: HTTP ' . ($response['status'] ?? 0));
+    }
+    $finalUrl = $response['headers']['x-final-url'] ?? $url;
+    $finalPath = parse_url($finalUrl, PHP_URL_PATH);
+    if (is_string($finalPath) && basename($finalPath) === 'no_icon_subject.png') {
+        throw new RuntimeException('Bangumi no-icon placeholder rejected');
     }
     if (file_put_contents($tmp, (string) $response['body'], LOCK_EX) === false) {
         throw new RuntimeException('cannot write temp image');
@@ -304,8 +351,12 @@ function upsert_observed(int $subjectId, ?string $url, string $mode): string
         $status = $existing && $existing['downloaded_url'] ? 'remote_missing' : 'no_cover';
     } elseif (!$existing) {
         $status = 'pending';
-    } elseif (($existing['downloaded_url'] ?? null) === $url && local_cover_ok($existing['relative_path'] ?? null)) {
-        $status = $mode === 'sync' ? 'downloaded' : 'unchanged';
+    } elseif (($existing['downloaded_url'] ?? null) === $url && local_cover_ok($existing['relative_path'] ?? null, $existing)) {
+        if (in_array(($existing['status'] ?? ''), ['pending_deploy', 'mapping_failed'], true)) {
+            $status = (string) $existing['status'];
+        } else {
+            $status = $mode === 'sync' ? 'downloaded' : 'unchanged';
+        }
     } else {
         $status = ($existing['downloaded_url'] ?? null) ? 'pending_update' : 'pending';
     }
@@ -365,18 +416,31 @@ function apply_one(int $subjectId, bool $dryRun = false): bool
         return true;
     }
     db()->prepare('UPDATE cover_manifest SET status = \'downloading\' WHERE subject_id = :id')->execute(['id' => $subjectId]);
-    $oldPath = $row['relative_path'] ?? null;
     try {
         $meta = download_image_to_tmp($subjectId, $row['observed_url']);
         $remoteFilename = safe_remote_filename($subjectId, (string) $row['observed_url'], $meta['extension']);
         $relative = cover_relative_path($subjectId, $remoteFilename);
         $target = cover_absolute_path($relative);
-        $targetDir = dirname($target);
-        if (!is_dir($targetDir) && !mkdir($targetDir, 0775, true) && !is_dir($targetDir)) {
-            throw new RuntimeException('cannot create cover directory');
+        if (is_file($target)) {
+            $existingSha = hash_file('sha256', $target);
+            if ($existingSha === $meta['sha256']) {
+                @unlink($meta['tmp_path']);
+            } else {
+                $extension = pathinfo($remoteFilename, PATHINFO_EXTENSION);
+                $stem = substr($remoteFilename, 0, -strlen('.' . $extension));
+                $localFilename = $stem . '--' . substr($meta['sha256'], 0, 12) . '.' . $extension;
+                $relative = cover_relative_path($subjectId, $localFilename);
+                $target = cover_absolute_path($relative);
+            }
         }
-        if (!rename($meta['tmp_path'], $target)) {
-            throw new RuntimeException('cannot move cover atomically');
+        if (is_file($meta['tmp_path'])) {
+            $targetDir = dirname($target);
+            if (!is_dir($targetDir) && !mkdir($targetDir, 0775, true) && !is_dir($targetDir)) {
+                throw new RuntimeException('cannot create cover directory');
+            }
+            if (!rename($meta['tmp_path'], $target)) {
+                throw new RuntimeException('cannot move cover atomically');
+            }
         }
         $stmt = db()->prepare('UPDATE cover_manifest SET downloaded_url = observed_url, remote_filename = :remote_filename, relative_path = :path, mime_type = :mime,
             file_extension = :ext, file_size = :size, sha256 = :sha, etag = :etag, last_modified = :lm,
@@ -397,14 +461,8 @@ function apply_one(int $subjectId, bool $dryRun = false): bool
         return true;
     } catch (Throwable $exc) {
         mark_failed($subjectId, $exc->getMessage());
-        if ((bool) $GLOBALS['cover_sync_options']['write-mysql']) {
-            try {
-                sync_mysql_cover_cache($subjectId, 'failed', $row['remote_filename'] ?? null, $row['observed_url'] ?? null, $oldPath, $exc->getMessage(), []);
-            } catch (Throwable $mappingError) {
-                db()->prepare('UPDATE cover_manifest SET error_message = :error, last_checked_at = :checked WHERE subject_id = :id')
-                    ->execute(['error' => mb_substr($exc->getMessage() . '; cover_cache failure mapping failed: ' . $mappingError->getMessage(), 0, 1000), 'checked' => now_utc(), 'id' => $subjectId]);
-            }
-        }
+        // cover_cache represents the website's last safe display mapping; never write
+        // transient download failures to MariaDB or disable a previous cached cover.
         return false;
     }
 }
@@ -478,11 +536,18 @@ function scan_pages(string $mode, array $options): array
         $page = fetch_subject_page($offset);
         $total = (int) ($page['total'] ?? 0);
         $items = $page['data'] ?? [];
+        $pageConsumed = 0;
         foreach ($items as $item) {
-            if ($options['max-items'] !== null && $processedItems >= (int) $options['max-items']) break 2;
+            if ($options['max-items'] !== null && $processedItems >= (int) $options['max-items']) {
+                update_run($run['run_id'], $offset, $total, 'running');
+                break 2;
+            }
+            $offset++;
+            $pageConsumed++;
             $id = (int) ($item['id'] ?? 0);
-            if ($id <= 0 || (int) ($item['type'] ?? SUBJECT_TYPE_ANIME) !== SUBJECT_TYPE_ANIME) continue;
-            $url = $item['images']['large'] ?? null;
+            if ($id <= 0) { throw new RuntimeException('Bangumi API subject id invalid'); }
+            if ((int) ($item['type'] ?? 0) !== SUBJECT_TYPE_ANIME) continue;
+            $url = subject_large_image_url($item);
             $before = manifest_row($id);
             $status = upsert_observed($id, is_string($url) && $url !== '' ? $url : null, $mode);
             $stats['scanned_anime']++;
@@ -502,7 +567,9 @@ function scan_pages(string $mode, array $options): array
                 $changes[] = ['subject_id' => $id, 'status' => $status, 'downloaded_url' => $before['downloaded_url'] ?? null, 'observed_url' => $after['observed_url'] ?? null];
             }
         }
-        $offset += PAGE_LIMIT;
+        if ($pageConsumed === 0 && $offset < (int) $total) {
+            throw new RuntimeException('Bangumi API page made no cursor progress');
+        }
         $stats['api_pages']++;
         update_run($run['run_id'], $offset, $total, 'running');
         usleep((int) (((float) $options['api-delay']) * 1000000));
@@ -554,10 +621,10 @@ function retry_failed(array $options): array
 function verify_files(array $options): array
 {
     $stats = stats_template('verify-files');
-    $rows = db()->query("SELECT subject_id, relative_path FROM cover_manifest WHERE subject_type = 2 AND relative_path IS NOT NULL")->fetchAll(PDO::FETCH_ASSOC);
+    $rows = db()->query("SELECT subject_id, relative_path, mime_type, file_extension, file_size, sha256 FROM cover_manifest WHERE subject_type = 2 AND relative_path IS NOT NULL")->fetchAll(PDO::FETCH_ASSOC);
     foreach ($rows as $row) {
         $stats['scanned_anime']++;
-        if (!local_cover_ok($row['relative_path'])) {
+        if (!local_cover_ok($row['relative_path'], $row)) {
             db()->prepare("UPDATE cover_manifest SET status = 'pending_update', error_message = 'local file missing or invalid' WHERE subject_id = :id")->execute(['id' => $row['subject_id']]);
             $stats['url_changes']++;
         } else {
@@ -772,6 +839,10 @@ function import_mapping(array $options): array
 
 function cleanup_covers(array $options): array
 {
+    if ((bool) $options['apply']) {
+        fwrite(STDERR, "cleanup-covers --apply is disabled until production cover_cache references or a trusted active mapping snapshot can be verified.\n");
+        exit(2);
+    }
     $stats = stats_template('cleanup-covers');
     $root = cover_sync_paths()['covers'];
     $subjects = $root . '/subjects';
@@ -789,15 +860,9 @@ function cleanup_covers(array $options): array
         $path = $fileInfo->getPathname();
         $relative = str_replace('\\', '/', substr($path, strlen(rtrim($root, DIRECTORY_SEPARATOR)) + 1));
         if (isset($referenced[$relative])) continue;
-        if (!preg_match('#^subjects/[0-9]{3,}/[0-9]{3}/[0-9]+_[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$#i', $relative)) continue;
+        if (!preg_match('#^subjects/[0-9]{3,}/[0-9]{3}/[0-9]+_[A-Za-z0-9_-]+(?:--[a-f0-9]{12})?\.(jpg|jpeg|png|webp)$#i', $relative)) continue;
         echo "cleanup_candidate: {$relative}\n";
         $stats['scanned_anime']++;
-        if ((bool) $options['apply']) {
-            if (!unlink($path)) {
-                throw new RuntimeException('cannot delete cleanup candidate: ' . $relative);
-            }
-            $stats['update_success']++;
-        }
     }
     $stats['complete'] = true;
     return $stats;
@@ -813,25 +878,33 @@ function print_stats(array $stats): void
 function usage(): void
 {
     echo "Usage: php bin/bangumi_covers.php <sync|check-updates|apply-updates|retry-failed|verify-files|deep-check|export-mapping|import-mapping|cleanup-covers> [options]\n";
-    echo "All Bangumi subject scans are fixed to type=2, limit=100, images.large only.\n";
+    echo "All Bangumi subject scans are fixed to type=2, limit=50, images.large only.\n";
 }
 
 [$command, $options] = cli_options($argv);
 $GLOBALS['cover_sync_options'] = $options;
 try {
     ensure_runtime_dirs();
-    match ($command) {
-        'sync' => print_stats(scan_pages('sync', $options)),
-        'check-updates' => print_stats(scan_pages('check-updates', $options)),
-        'apply-updates' => print_stats(apply_updates($options)),
-        'retry-failed' => print_stats(retry_failed($options)),
-        'verify-files' => print_stats(verify_files($options)),
-        'deep-check' => print_stats(deep_check($options)),
-        'export-mapping' => print_stats(export_mapping($options)),
-        'import-mapping' => print_stats(import_mapping($options)),
-        'cleanup-covers' => print_stats(cleanup_covers($options)),
-        default => usage(),
+    $stats = match ($command) {
+        'sync' => scan_pages('sync', $options),
+        'check-updates' => scan_pages('check-updates', $options),
+        'apply-updates' => apply_updates($options),
+        'retry-failed' => retry_failed($options),
+        'verify-files' => verify_files($options),
+        'deep-check' => deep_check($options),
+        'export-mapping' => export_mapping($options),
+        'import-mapping' => import_mapping($options),
+        'cleanup-covers' => cleanup_covers($options),
+        default => null,
     };
+    if ($stats === null) {
+        usage();
+    } else {
+        print_stats($stats);
+        if (($stats['update_failed'] ?? 0) > 0) {
+            exit(1);
+        }
+    }
 } catch (Throwable $exc) {
     fwrite(STDERR, 'ERROR: ' . $exc->getMessage() . "\n");
     exit(1);

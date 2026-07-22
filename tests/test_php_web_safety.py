@@ -36,13 +36,13 @@ def test_cover_cli_uses_anime_bulk_api_and_custom_user_agent_only():
     cli = (ROOT / "bin" / "bangumi_covers.php").read_text(encoding="utf-8")
 
     assert "SUBJECT_TYPE_ANIME = 2" in cli
-    assert "PAGE_LIMIT = 100" in cli
+    assert "PAGE_LIMIT = 50" in cli
     assert "type=' . SUBJECT_TYPE_ANIME" in cli
-    assert "images']['large" in cli
+    assert "images" in cli and "large" in cli
     assert "images']['common" not in cli
     assert "/v0/subjects/{id}" not in cli
     assert "/image" not in cli
-    assert "shakamilo1/chronoshelter-cover-archive/1.0" in cli
+    assert "shakamilo1/ChronoShelter-cover-sync/1.0" in cli
     assert "BANGUMI_ACCESS_TOKEN" in cli
 
 

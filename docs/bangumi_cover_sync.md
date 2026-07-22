@@ -14,17 +14,17 @@ ChronoShelter 的正式 Web 服务器不应依赖 Bangumi 网络可用性。网�
 CLI 只调用批量接口：
 
 ```text
-GET https://api.bgm.tv/v0/subjects?type=2&limit=100&offset={offset}
+GET https://api.bgm.tv/v0/subjects?type=2&limit=50&offset={offset}
 ```
 
-每页 `limit=100`，从 `offset=0` 开始，并只读取每个条目的 `images.large`。不会爬取 HTML 页面，也不会逐条调用 `/v0/subjects/{id}` 或 `/v0/subjects/{id}/image`。
+每页 `limit=50`，从 `offset=0` 开始，并只读取每个条目的 `images.large`。不会爬取 HTML 页面，也不会逐条调用 `/v0/subjects/{id}` 或 `/v0/subjects/{id}/image`。
 
 ## User-Agent 与可选 Token
 
 默认 User-Agent：
 
 ```text
-shakamilo1/chronoshelter-cover-archive/1.0
+shakamilo1/ChronoShelter-cover-sync/1.0 (https://github.com/shakamilo1/ChronoShelter)
 ```
 
 可选访问令牌通过环境变量提供：
@@ -158,7 +158,7 @@ php bin/bangumi_covers.php deep-check --all --confirm-all
 
 ## 图片验证与安全替换
 
-CLI 只接受 JPEG、PNG、WebP。下载必须 HTTP 200、非空、Content-Type 与文件头匹配，且内容不能是 HTML/JSON 错误页或 Bangumi 默认无图占位。验证后计算 SHA-256，再原子移动到正式分片目录。更新封面时先保存新文件并更新清单；如果扩展名变化，确认新文件成功后再删除旧文件。下载失败时保留旧封面。
+CLI 只接受 JPEG、PNG、WebP。下载必须 HTTP 200、非空、Content-Type 与文件头匹配，且内容不能是 HTML/JSON 错误页或 Bangumi 默认无图占位。验证后计算 SHA-256，再原子移动到正式分片目录。更新封面时先保存新文件并更新清单；旧文件始终保留，直到未来有生产引用证明的显式清理流程确认可删。下载失败时保留旧封面。
 
 `remote_missing` 默认不会删除旧封面，避免 Bangumi 短暂异常导致批量丢图。未来如需清理，应使用显式清理参数并先审查目标。
 
@@ -188,9 +188,9 @@ var/cover-sync/covers.sqlite
 
 ## 映射导出和正式部署
 
-下载机器和正式服务器可能不是同一台机器。默认离线同步只写 SQLite 清单并把新下载记录保留为 `pending_deploy`，不要求也不强制连接生产 MariaDB；只有明确传入 `--write-mysql` 时才会尝试直接写 `cover_cache`，失败才会标记 `mapping_failed`。完成离线同步后，先复制 `covers/subjects/` 中新增/更新的文件到正式服务器，再运行 `php bin/bangumi_covers.php export-mapping --file=var/cover-sync/reports/cover-mapping.jsonl` 导出映射，并在正式服务器运行 `php bin/bangumi_covers.php import-mapping --file=cover-mapping.jsonl` 导入 `cover_cache`。不能只复制图片而不复制数据库映射；网页只根据 `cover_cache.local_path` 显示封面，网页本身永远不访问 Bangumi。确认网页使用新路径后，最后再清理不再被映射引用的旧文件。
+下载机器和正式服务器可能不是同一台机器。默认离线同步只写 SQLite 清单并把新下载记录保留为 `pending_deploy`，不要求也不强制连接生产 MariaDB；只有明确传入 `--write-mysql` 时才会尝试直接写 `cover_cache`，失败才会标记 `mapping_failed`。完成离线同步后，先运行 `php bin/bangumi_covers.php export-mapping --file=var/cover-sync/reports/cover-mapping.jsonl` 导出映射，再复制 `covers/subjects/` 中新增/更新的文件到正式服务器，并在正式服务器运行 `php bin/bangumi_covers.php import-mapping --file=cover-mapping.jsonl` 导入 `cover_cache`。不能只复制图片而不复制数据库映射；网页只根据 `cover_cache.local_path` 显示封面，网页本身永远不访问 Bangumi。确认网页使用新路径后，最后再清理不再被映射引用的旧文件。
 
 
 ### 封面清理安全规则
 
-同步程序不会在新封面下载成功、SQLite 更新、MariaDB 写入或 import-mapping 时自动删除旧封面。失败的 `pending_update`、`failed`、`mapping_failed`、`remote_missing` 不会污染网站当前 `cached` 映射；只要旧文件仍有效，export-mapping 会继续导出旧封面。需要清理时先运行 `php bin/bangumi_covers.php cleanup-covers` 查看 dry-run 候选；只有用户确认后才可显式追加 `--apply` 删除未被映射引用且通过安全校验的 `covers/subjects/` 文件。
+同步程序不会在新封面下载成功、SQLite 更新、MariaDB 写入或 import-mapping 时自动删除旧封面。失败的 `pending_update`、`failed`、`mapping_failed`、`remote_missing` 不会污染网站当前 `cached` 映射；只要旧文件仍有效，export-mapping 会继续导出旧封面。需要清理时先运行 `php bin/bangumi_covers.php cleanup-covers` 查看 dry-run 候选；当前 `--apply` 会拒绝执行并返回 2，直到实现可靠的生产 `cover_cache` 引用或可信活动映射快照校验后才允许真实删除。
