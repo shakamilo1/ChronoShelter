@@ -1290,8 +1290,8 @@ function print_stats(array $stats): void
 
 function usage(): void
 {
-    echo "Usage: php bin/bangumi_covers.php <sync|check-updates|apply-updates|retry-failed|verify-files|deep-check|export-mapping|import-mapping|cleanup-covers> [options]\n";
-    echo "All Bangumi subject scans are fixed to type=2, limit=50, images.large only.\n";
+    echo "Usage: php bin/bangumi_covers.php <verify-files|import-mapping|cleanup-covers> [options]\n";
+    echo "NAS/PHP no longer performs Bangumi network sync. Use: python tools/download_covers.py sync\n";
     echo "Default sync is offline: it writes SQLite, sets deploy_status=pending_deploy, then use export-mapping/import-mapping after copying covers.\n";
     echo "SQLite status is a deprecated compatibility summary; artifact_status, deploy_status and last_check_result carry the authoritative workflow state.\n";
 }
@@ -1303,13 +1303,8 @@ function main(array $argv): int
     try {
         ensure_runtime_dirs();
         $stats = match ($command) {
-            'sync' => scan_pages('sync', $options),
-            'check-updates' => scan_pages('check-updates', $options),
-            'apply-updates' => apply_updates($options),
-            'retry-failed' => retry_failed($options),
+            'sync', 'check-updates', 'apply-updates', 'retry-failed', 'deep-check', 'export-mapping' => throw new RuntimeException('PHP networking cover sync is disabled on NAS; use: python tools/download_covers.py sync'),
             'verify-files' => verify_files($options),
-            'deep-check' => deep_check($options),
-            'export-mapping' => export_mapping($options),
             'import-mapping' => import_mapping($options),
             'cleanup-covers' => cleanup_covers($options),
             default => null,

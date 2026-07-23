@@ -131,13 +131,13 @@ def cache_cover_with_metadata(subject_id: int, image_type: str = "large", media_
     variants to guess the current cover.
     """
     if local_path is None:
-        return CoverCacheResult(subject_id=subject_id, ok=False, status="disabled", error="local_path is required; use php bin/bangumi_covers.php sync --resume")
+        return CoverCacheResult(subject_id=subject_id, ok=False, status="disabled", error="local_path is required; use python tools/download_covers.py sync --resume")
     try:
         path = cover_path(subject_id, media_root, local_path)
     except ValueError as exc:
         return CoverCacheResult(subject_id=subject_id, ok=False, status="invalid", error=str(exc))
     if not path.exists() or path.stat().st_size <= 0:
-        return CoverCacheResult(subject_id=subject_id, ok=False, status="disabled", error="local cover file is missing; use php bin/bangumi_covers.php sync --resume")
+        return CoverCacheResult(subject_id=subject_id, ok=False, status="disabled", error="local cover file is missing; use python tools/download_covers.py sync --resume")
     data = path.read_bytes()
     size = detect_image_size(data)
     return CoverCacheResult(

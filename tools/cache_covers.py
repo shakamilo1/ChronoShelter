@@ -11,7 +11,7 @@ import sys
 
 MESSAGE = (
     "tools/cache_covers.py is deprecated and disabled. "
-    "Use: php bin/bangumi_covers.php sync --resume"
+    "Use: python tools/download_covers.py sync --resume"
 )
 
 

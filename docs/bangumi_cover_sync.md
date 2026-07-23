@@ -90,19 +90,19 @@ var/cover-sync/
 小规模测试，最多扫描一页、最多处理 10 条：
 
 ```bash
-php bin/bangumi_covers.php sync --max-pages=1 --max-items=10 --dry-run
+python tools/download_covers.py sync --max-pages=1 --max-items=1 --api-delay=0 --download-delay=0
 ```
 
 首次全量同步或补齐缺失封面：
 
 ```bash
-php bin/bangumi_covers.php sync --resume
+python tools/download_covers.py sync --resume
 ```
 
 中断后继续：
 
 ```bash
-php bin/bangumi_covers.php sync --resume
+python tools/download_covers.py sync --resume
 ```
 
 手动检查新动画和封面 URL 变化，只生成清单和报告，不立即替换图片：
@@ -194,3 +194,30 @@ var/cover-sync/covers.sqlite
 ### 封面清理安全规则
 
 同步程序不会在新封面下载成功、SQLite 更新、MariaDB 写入或 import-mapping 时自动删除旧封面。SQLite 中旧的 `status` 列仅作兼容摘要，新的运行逻辑使用 `artifact_status` 表示最后成功文件是否可用、`deploy_status` 表示 `deployed`/`pending_deploy`/`mapping_failed`，以及 `last_check_result` 记录 `unchanged`、`updated`、`remote_missing`、`http_failed`、`local_invalid` 等最近检查结果。失败的 `pending_update`、`failed`、`mapping_failed`、`remote_missing` 不会污染网站当前 `cached` 映射；只要旧文件仍有效，export-mapping 会继续导出旧封面。需要清理时先运行 `php bin/bangumi_covers.php cleanup-covers` 查看 dry-run 候选；当前 `--apply` 会拒绝执行并返回 2，直到实现可靠的生产 `cover_cache` 引用或可信活动映射快照校验后才允许真实删除。
+
+## Windows Python + VPN + NAS SMB 部署
+
+最终部署结构是：PHP 网站运行在 NAS 上，只读取 MariaDB/本地 `covers/`；Bangumi 联网同步在开启 VPN 的 Windows 上执行 `python tools/download_covers.py`。`CHRONOSHELTER_COVERS_DIR` 可以指向 NAS 的 UNC/SMB 共享路径（例如 `\\AS6604T-BA68\Web\chronoshelter-pr6-runtime\covers`），`CHRONOSHELTER_COVER_SYNC_STATE_DIR` 可以指向同一共享中的非公开状态目录。同步器只写 SQLite 状态、封面文件和 JSONL 映射，不连接生产 MariaDB；NAS 上只运行 `php bin/bangumi_covers.php import-mapping --file=...` 事务导入映射。
+
+Windows PowerShell 小规模隔离测试（不设置 Token，只扫描一页、最多下载一张、使用全新 NAS 测试目录、不连接或修改生产 MariaDB）：
+
+```powershell
+Remove-Item Env:BANGUMI_ACCESS_TOKEN -ErrorAction SilentlyContinue
+$env:CHRONOSHELTER_COVERS_DIR='\\AS6604T-BA68\Web\chronoshelter-pr6-runtime\covers'
+$env:CHRONOSHELTER_COVER_SYNC_STATE_DIR='\\AS6604T-BA68\Web\chronoshelter-pr6-runtime\var\cover-sync'
+python tools/download_covers.py sync --max-pages=1 --max-items=1 --api-delay=0 --download-delay=0 --proxy http://127.0.0.1:7890 --verbose
+python tools/download_covers.py verify-files
+python tools/download_covers.py export-mapping --file '\\AS6604T-BA68\Web\chronoshelter-pr6-runtime\var\cover-sync\reports\cover-mapping-test.jsonl'
+```
+
+NAS 侧导入命令：
+
+```bash
+php bin/bangumi_covers.php import-mapping --file=var/cover-sync/reports/cover-mapping-test.jsonl
+```
+
+无需修改 Windows `php.ini`；联网、证书和代理由 Windows Python 进程负责。标准 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 环境变量会被 Python 标准库代理处理；显式 `--proxy` 会覆盖本次同步使用的 HTTP/HTTPS 代理。
+
+## 未来集成边界
+
+本 PR 不实现主页按钮、Windows 服务或任务队列。后续集成应为：主页按钮 → NAS 创建待执行任务 → Windows 后台 Python worker 轮询任务 → 通过 Windows VPN 获取 Bangumi 数据和封面 → 写入 NAS 暂存区 → NAS 事务导入 MariaDB → 页面读取任务状态和进度。禁止未来通过 PHP `shell_exec()` 直接启动联网同步，也禁止让 NAS 直接调用 Windows Python；PHP 网站请求仍不得访问 Bangumi 或触发封面修复。

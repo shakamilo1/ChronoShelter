@@ -8,7 +8,7 @@ def test_placeholder_points_to_php_offline_sync_not_python_cache():
 
     assert "tools/cache_covers.py" not in text
     assert "Use offline cover sync" in text
-    assert "php bin/bangumi_covers.php sync --resume" in text
+    assert "python tools/download_covers.py sync" in text
 
 
 def test_readme_uses_remote_filename_partitioned_cover_path_not_old_flat_path():

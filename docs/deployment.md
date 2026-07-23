@@ -216,18 +216,18 @@ mysql -u root -p chrono_bangumi < sql/migrations/004_add_subjects_pagination_ind
 
 ## 12. 动画封面离线同步
 
-网页请求不会下载 Bangumi 封面，也不会访问 `api.bgm.tv` 或 `lain.bgm.tv`。封面只由 PHP CLI 离线工具维护，并且固定只处理 Bangumi `type=2` 动画、批量接口 `GET /v0/subjects?type=2&limit=50&offset=...`、`images.large`。API Token 只发送给 `https://api.bgm.tv` JSON 请求，图片下载请求不携带 Authorization，图片重定向也会重新生成无 Token 请求头。旧的 Python 单条目封面下载脚本已经禁用，避免误用 `/v0/subjects/{id}/image` 或远程默认图。
+网页请求不会下载 Bangumi 封面，也不会访问 `api.bgm.tv` 或 `lain.bgm.tv`。封面只由 Windows/Python 离线工具维护，并且固定只处理 Bangumi `type=2` 动画、批量接口 `GET /v0/subjects?type=2&limit=50&offset=...`、`images.large`。API Token 只发送给 `https://api.bgm.tv` JSON 请求，图片下载请求不携带 Authorization，图片重定向也会重新生成无 Token 请求头。NAS/PHP 不负责联网下载；Windows Python 同步器只使用批量 subjects API 与 images.large，避免误用 `/v0/subjects/{id}/image` 或远程默认图。
 
 小规模验证（不会启动完整下载）：
 
 ```bash
-php bin/bangumi_covers.php sync --max-pages=1 --max-items=10 --dry-run
+python tools/download_covers.py sync --max-pages=1 --max-items=1 --api-delay=0 --download-delay=0
 ```
 
 首次全量下载或中断恢复（只在已明确决定执行全量同步的维护机器上运行）：
 
 ```bash
-php bin/bangumi_covers.php sync --resume
+python tools/download_covers.py sync --resume
 ```
 
 后续检查和应用更新：

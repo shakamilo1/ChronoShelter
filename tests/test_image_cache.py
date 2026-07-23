@@ -94,7 +94,7 @@ def test_missing_cover_is_disabled_without_creating_files(tmp_path):
 
     assert result.ok is False
     assert result.status == "disabled"
-    assert "php bin/bangumi_covers.php sync --resume" in (result.error or "")
+    assert "python tools/download_covers.py sync --resume" in (result.error or "")
     assert not covers.exists()
 
 
