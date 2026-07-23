@@ -28,6 +28,12 @@ from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
+try:
+    from PIL import Image, UnidentifiedImageError
+except Exception:  # pragma: no cover - exercised in dependency checks.
+    Image = None  # type: ignore[assignment]
+    UnidentifiedImageError = OSError  # type: ignore[assignment]
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 API_URL = "https://api.bgm.tv/v0/subjects"
 SUBJECT_TYPE = 2
@@ -35,6 +41,8 @@ PAGE_LIMIT = 50
 USER_AGENT = "shakamilo1/ChronoShelter-cover-sync/1.0 (https://github.com/shakamilo1/ChronoShelter)"
 ALLOWED_MIME = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
 FILENAME_RE_TEMPLATE = r"^{sid}_[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$"
+MAX_IMAGE_BYTES = 20 * 1024 * 1024
+CHUNK_SIZE = 128 * 1024
 
 
 class CoverSyncError(RuntimeError):
@@ -80,6 +88,23 @@ def sqlite_path() -> Path:
 def ensure_dirs() -> None:
     for path in (state_dir(), tmp_dir(), reports_dir(), covers_dir()):
         path.mkdir(parents=True, exist_ok=True)
+    cleanup_stale_parts()
+
+
+def cleanup_stale_parts() -> None:
+    """Remove orphaned download temp files from previous interrupted runs only."""
+    candidates: list[Path] = []
+    if tmp_dir().exists():
+        candidates.extend(tmp_dir().glob("*.part"))
+    subjects = covers_dir() / "subjects"
+    if subjects.exists():
+        candidates.extend(subjects.rglob("*.part"))
+    for path in candidates:
+        try:
+            if path.is_file() or path.is_symlink():
+                path.unlink()
+        except OSError:
+            print(f"WARNING: could not remove stale temp file: {path}", file=sys.stderr)
 
 
 def connect_db() -> sqlite3.Connection:
@@ -159,6 +184,20 @@ def cover_absolute_path(relative: str | PurePosixPath) -> Path:
     return covers_dir() / Path(*rel.parts)
 
 
+def ensure_under(root: Path, path: Path) -> None:
+    root_real = root.resolve()
+    target_real = path.resolve() if path.exists() else path.parent.resolve()
+    if target_real != root_real and root_real not in target_real.parents:
+        raise CoverSyncError("path escapes covers root")
+
+
+def shard_dir(subject_id: int) -> Path:
+    directory = cover_absolute_path(partition_prefix(subject_id))
+    directory.mkdir(parents=True, exist_ok=True)
+    ensure_under(covers_dir(), directory)
+    return directory
+
+
 def is_no_icon(url: str) -> bool:
     return PurePosixPath(urllib.parse.urlparse(url).path).name == "no_icon_subject.png"
 
@@ -195,7 +234,11 @@ def proxy_handler(proxy: str | None) -> urllib.request.ProxyHandler:
 
 
 def opener(proxy: str | None) -> urllib.request.OpenerDirector:
-    return urllib.request.build_opener(proxy_handler(proxy), urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+    class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+            return None
+
+    return urllib.request.build_opener(proxy_handler(proxy), urllib.request.HTTPSHandler(context=ssl.create_default_context()), NoRedirectHandler)
 
 
 def request_once(url: str, headers: dict[str, str], proxy: str | None, timeout: float) -> tuple[int, dict[str, str], bytes]:
@@ -207,6 +250,29 @@ def request_once(url: str, headers: dict[str, str], proxy: str | None, timeout: 
         return exc.code, {k.lower(): v for k, v in exc.headers.items()}, exc.read()
     except urllib.error.URLError as exc:
         raise CoverSyncError(f"network error: {exc.reason}") from exc
+
+
+def stream_once_to_tmp(url: str, headers: dict[str, str], proxy: str | None, timeout: float, tmp: Path, max_bytes: int = MAX_IMAGE_BYTES) -> tuple[int, dict[str, str], int]:
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    total = 0
+    try:
+        with opener(proxy).open(req, timeout=timeout) as resp, tmp.open("wb") as out:
+            while True:
+                chunk = resp.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise CoverSyncError("image response exceeds maximum allowed size")
+                out.write(chunk)
+            return resp.status, {k.lower(): v for k, v in resp.headers.items()}, total
+    except urllib.error.HTTPError as exc:
+        return exc.code, {k.lower(): v for k, v in exc.headers.items()}, 0
+    except urllib.error.URLError as exc:
+        raise CoverSyncError(f"network error: {exc.reason}") from exc
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def should_retry(status: int) -> bool:
@@ -249,16 +315,23 @@ def fetch_subject_page(offset: int, proxy: str | None, timeout: float = 30) -> d
     return data
 
 
-def follow_image_redirects(url: str, proxy: str | None, timeout: float = 45, max_redirects: int = 5) -> tuple[int, dict[str, str], bytes, str]:
+def validate_image_url(url: str) -> urllib.parse.ParseResult:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.port not in (None, 443):
+        raise CoverSyncError("invalid or unsafe image URL/redirect")
+    return parsed
+
+
+def follow_image_redirects_to_tmp(url: str, proxy: str | None, tmp: Path, timeout: float = 45, max_redirects: int = 5) -> tuple[int, dict[str, str], str]:
     current = url
     for _ in range(max_redirects + 1):
-        parsed = urllib.parse.urlparse(current)
-        if parsed.scheme != "https" or not parsed.hostname:
-            raise CoverSyncError("invalid or unsafe image URL/redirect")
+        validate_image_url(current)
         if is_no_icon(current):
             raise RemoteMissingCover("Bangumi no-icon placeholder rejected")
-        status, headers, body = http_get(current, image_headers(), proxy, timeout)
+        tmp.unlink(missing_ok=True)
+        status, headers, _size = stream_once_to_tmp(current, image_headers(), proxy, timeout, tmp)
         if status in {301, 302, 303, 307, 308}:
+            tmp.unlink(missing_ok=True)
             location = headers.get("location")
             if not location:
                 raise CoverSyncError("image redirect missing Location")
@@ -266,8 +339,20 @@ def follow_image_redirects(url: str, proxy: str | None, timeout: float = 45, max
             continue
         if is_no_icon(current):
             raise RemoteMissingCover("Bangumi no-icon placeholder rejected")
-        return status, headers, body, current
+        return status, headers, current
     raise CoverSyncError("too many image redirects")
+
+
+def follow_image_redirects(url: str, proxy: str | None, timeout: float = 45, max_redirects: int = 5) -> tuple[int, dict[str, str], bytes, str]:
+    """Compatibility helper used by older tests; image downloads use streaming."""
+    fd, name = tempfile.mkstemp(prefix="compat-", suffix=".part", dir=tmp_dir())
+    os.close(fd)
+    tmp = Path(name)
+    try:
+        status, headers, final_url = follow_image_redirects_to_tmp(url, proxy, tmp, timeout, max_redirects)
+        return status, headers, tmp.read_bytes() if tmp.exists() else b"", final_url
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def image_type(data: bytes, content_type: str) -> tuple[str, str] | None:
@@ -301,7 +386,10 @@ def validate_png(data: bytes) -> bool:
     return False
 
 
-def validate_image_bytes(data: bytes, content_type: str) -> tuple[str, str]:
+def validate_image_file(path: Path, content_type: str) -> tuple[str, str, int, str]:
+    if Image is None:
+        raise CoverSyncError("Pillow is required for full image validation; install with: python -m pip install Pillow")
+    data = path.read_bytes()
     if len(data) < 32 or len(data) > 20 * 1024 * 1024 or data.lstrip()[:1] in {b"<", b"{", b"["}:
         raise CoverSyncError("downloaded content is not a valid image")
     detected = image_type(data, content_type)
@@ -314,25 +402,78 @@ def validate_image_bytes(data: bytes, content_type: str) -> tuple[str, str]:
         raise CoverSyncError("PNG structure is incomplete or CRC is invalid")
     if ext == "webp" and (len(data) < 12 or int.from_bytes(data[4:8], "little") + 8 != len(data)):
         raise CoverSyncError("WebP RIFF length is invalid")
-    return mime, ext
+    try:
+        with Image.open(path) as img:  # type: ignore[union-attr]
+            expected_format = {"jpg": "JPEG", "png": "PNG", "webp": "WEBP"}[ext]
+            if img.format != expected_format:
+                raise CoverSyncError("Pillow image format does not match content type")
+            width, height = img.size
+            if width <= 0 or height <= 0:
+                raise CoverSyncError("decoded image dimensions are invalid")
+            img.verify()
+        with Image.open(path) as img:  # type: ignore[union-attr]
+            img.load()
+    except (UnidentifiedImageError, OSError) as exc:
+        raise CoverSyncError(f"Pillow failed to fully decode image: {exc}") from exc
+    return mime, ext, len(data), sha256(data).hexdigest()
 
 
 def download_image(subject_id: int, url: str, proxy: str | None) -> DownloadMeta:
     ensure_dirs()
-    fd, name = tempfile.mkstemp(prefix=f"{subject_id}-", suffix=".part", dir=tmp_dir())
+    fd, name = tempfile.mkstemp(prefix=f".{subject_id}-", suffix=".part", dir=shard_dir(subject_id))
     os.close(fd)
     tmp = Path(name)
     try:
-        status, headers, body, final_url = follow_image_redirects(url, proxy)
+        status, headers, final_url = follow_image_redirects_to_tmp(url, proxy, tmp)
         if status != 200:
             raise CoverSyncError(f"image download failed: HTTP {status}")
-        mime, ext = validate_image_bytes(body, headers.get("content-type", ""))
-        tmp.write_bytes(body)
-        digest = sha256(body).hexdigest()
-        return DownloadMeta(tmp, final_url, mime, ext, len(body), digest, headers.get("etag"), headers.get("last-modified"))
+        mime, ext, size, digest = validate_image_file(tmp, headers.get("content-type", ""))
+        return DownloadMeta(tmp, final_url, mime, ext, size, digest, headers.get("etag"), headers.get("last-modified"))
     except Exception:
         tmp.unlink(missing_ok=True)
         raise
+
+
+def manifest_file_valid(row: sqlite3.Row) -> bool:
+    try:
+        if not row["relative_path"] or not row["sha256"] or not row["mime_type"] or row["file_size"] is None:
+            return False
+        path = cover_absolute_path(row["relative_path"])
+        if not path.is_file():
+            return False
+        mime, ext, size, digest = validate_image_file(path, row["mime_type"])
+        return mime == row["mime_type"] and ext == row["file_extension"] and size == int(row["file_size"]) and digest == row["sha256"]
+    except Exception:
+        return False
+
+
+def commit_tmp_no_clobber(tmp: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    ensure_under(covers_dir(), target.parent)
+    if target.exists():
+        raise FileExistsError(str(target))
+    try:
+        os.link(tmp, target)
+        tmp.unlink()
+        return
+    except FileExistsError:
+        raise
+    except OSError:
+        try:
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+            try:
+                with os.fdopen(fd, "wb") as dst, tmp.open("rb") as src:
+                    shutil.copyfileobj(src, dst)
+                    dst.flush()
+                    os.fsync(dst.fileno())
+            except Exception:
+                target.unlink(missing_ok=True)
+                raise
+            tmp.unlink()
+        except Exception:
+            if target.exists() and target.stat().st_size == 0:
+                target.unlink(missing_ok=True)
+            raise
 
 
 def place_cover(subject_id: int, source_url: str, meta: DownloadMeta) -> tuple[str, str]:
@@ -354,10 +495,7 @@ def place_cover(subject_id: int, source_url: str, meta: DownloadMeta) -> tuple[s
             if sha256(target.read_bytes()).hexdigest() == meta.sha256:
                 meta.tmp_path.unlink(missing_ok=True)
                 return remote, rel.as_posix()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with open(meta.tmp_path, "rb") as src, open(target, "xb") as dst:
-        shutil.copyfileobj(src, dst)
-    meta.tmp_path.unlink(missing_ok=True)
+    commit_tmp_no_clobber(meta.tmp_path, target)
     return remote, rel.as_posix()
 
 
@@ -392,6 +530,7 @@ def sync(args: argparse.Namespace) -> int:
         offset = int(row["next_offset"])
     processed = 0
     pages = 0
+    stats = {"downloaded": 0, "unchanged": 0, "remote_missing": 0, "failed": 0, "processed": 0, "next_offset": offset}
     while True:
         if args.max_pages is not None and pages >= args.max_pages:
             break
@@ -403,8 +542,9 @@ def sync(args: argparse.Namespace) -> int:
         for item in data:
             if args.max_items is not None and processed >= args.max_items:
                 con.execute("INSERT INTO sync_runs (run_type,next_offset,total,updated_at) VALUES (?,?,?,?) ON CONFLICT(run_type) DO UPDATE SET next_offset=excluded.next_offset,total=excluded.total,updated_at=excluded.updated_at", (run_type, offset, total, now()))
-                con.commit()
-                return 0
+                stats["next_offset"] = offset
+                print(json.dumps(stats, ensure_ascii=False))
+                return 1 if stats["failed"] else 0
             offset += 1
             if not isinstance(item, dict) or int(item.get("type", 0)) != SUBJECT_TYPE:
                 continue
@@ -414,13 +554,21 @@ def sync(args: argparse.Namespace) -> int:
             url = subject_url(item)
             if not url:
                 save_missing(con, subject_id, None, "remote_missing")
+                stats["remote_missing"] += 1
+                if args.verbose:
+                    print(f"remote_missing subject_id={subject_id}")
                 processed += 1
+                stats["processed"] = processed
                 continue
-            old = con.execute("SELECT downloaded_url, relative_path, sha256 FROM cover_manifest WHERE subject_id=?", (subject_id,)).fetchone()
-            if old and old["downloaded_url"] == url and old["relative_path"] and cover_absolute_path(old["relative_path"]).is_file():
-                con.execute("UPDATE cover_manifest SET observed_url=?, last_check_result='unchanged', checked_at=? WHERE subject_id=?", (url, now(), subject_id))
+            old = con.execute("SELECT * FROM cover_manifest WHERE subject_id=?", (subject_id,)).fetchone()
+            if old and old["downloaded_url"] == url and manifest_file_valid(old):
+                con.execute("UPDATE cover_manifest SET observed_url=?, artifact_status='available', last_check_result='unchanged', last_error=NULL, checked_at=? WHERE subject_id=?", (url, now(), subject_id))
                 con.commit()
+                stats["unchanged"] += 1
+                if args.verbose:
+                    print(f"unchanged subject_id={subject_id}")
                 processed += 1
+                stats["processed"] = processed
                 continue
             try:
                 meta = download_image(subject_id, url, args.proxy)
@@ -432,22 +580,35 @@ def sync(args: argparse.Namespace) -> int:
                     (subject_id, url, url, remote, rel, meta.content_type, meta.extension, meta.file_size, meta.sha256, meta.etag, meta.last_modified, now(), now()),
                 )
                 con.commit()
+                stats["downloaded"] += 1
+                if args.verbose:
+                    print(f"downloaded subject_id={subject_id} path={rel}")
             except RemoteMissingCover:
                 save_missing(con, subject_id, url, "remote_missing")
+                stats["remote_missing"] += 1
+                if args.verbose:
+                    print(f"remote_missing subject_id={subject_id}")
             except Exception as exc:
                 save_missing(con, subject_id, url, "http_failed", str(exc))
+                stats["failed"] += 1
+                if args.verbose:
+                    print(f"failed subject_id={subject_id} reason={exc}")
             processed += 1
+            stats["processed"] = processed
             if args.download_delay:
                 time.sleep(args.download_delay)
         pages += 1
         con.execute("INSERT INTO sync_runs (run_type,next_offset,total,updated_at) VALUES (?,?,?,?) ON CONFLICT(run_type) DO UPDATE SET next_offset=excluded.next_offset,total=excluded.total,updated_at=excluded.updated_at", (run_type, offset, total, now()))
         con.commit()
+        stats["next_offset"] = offset
         if offset >= total:
             break
         if args.api_delay:
             time.sleep(args.api_delay)
-    print(json.dumps({"processed": processed, "next_offset": offset}, ensure_ascii=False))
-    return 0
+    stats["processed"] = processed
+    stats["next_offset"] = offset
+    print(json.dumps(stats, ensure_ascii=False))
+    return 1 if stats["failed"] else 0
 
 
 def verify_files(args: argparse.Namespace) -> int:
@@ -456,9 +617,8 @@ def verify_files(args: argparse.Namespace) -> int:
     for row in con.execute("SELECT * FROM cover_manifest WHERE relative_path IS NOT NULL"):
         path = cover_absolute_path(row["relative_path"])
         try:
-            data = path.read_bytes()
-            mime, ext = validate_image_bytes(data, row["mime_type"] or "")
-            if ext != row["file_extension"] or len(data) != row["file_size"] or sha256(data).hexdigest() != row["sha256"]:
+            mime, ext, size, digest = validate_image_file(path, row["mime_type"] or "")
+            if ext != row["file_extension"] or size != row["file_size"] or digest != row["sha256"]:
                 raise CoverSyncError("metadata mismatch")
         except Exception as exc:
             failed += 1
@@ -475,7 +635,7 @@ def export_mapping(args: argparse.Namespace) -> int:
     count = 0
     with out.open("w", encoding="utf-8", newline="\n") as fh:
         for row in con.execute("SELECT * FROM cover_manifest ORDER BY subject_id"):
-            if row["relative_path"] and row["sha256"]:
+            if row["relative_path"] and row["sha256"] and row["artifact_status"] != "invalid" and manifest_file_valid(row):
                 item = {"subject_id": row["subject_id"], "status": "cached", "remote_filename": row["remote_filename"], "source_url": row["downloaded_url"], "local_path": row["relative_path"], "content_type": row["mime_type"], "file_size": row["file_size"], "sha256": row["sha256"], "updated_at": row["last_success_at"] or row["checked_at"]}
             elif row["artifact_status"] == "missing" and row["last_check_result"] == "remote_missing":
                 item = {"subject_id": row["subject_id"], "status": "no_cover", "remote_filename": None, "source_url": None, "local_path": None, "content_type": None, "file_size": None, "sha256": None, "updated_at": row["checked_at"]}

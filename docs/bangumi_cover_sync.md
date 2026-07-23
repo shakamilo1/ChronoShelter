@@ -19,6 +19,16 @@ GET https://api.bgm.tv/v0/subjects?type=2&limit=50&offset={offset}
 
 每页 `limit=50`，从 `offset=0` 开始，并只读取每个条目的 `images.large`。不会爬取 HTML 页面，也不会逐条调用 `/v0/subjects/{id}` 或 `/v0/subjects/{id}/image`。
 
+## Python 环境
+
+Windows 维护机建议使用 Python 3.12+，并安装测试/同步所需依赖（其中 Pillow 用于完整解码 JPEG、PNG、WebP）：
+
+```powershell
+python -m pip install -r requirements-dev.txt
+```
+
+同步器支持 `CHRONOSHELTER_COVERS_DIR` 指向 NAS SMB/UNC 封面目录，例如 `\\AS6604T-BA68\Web\chronoshelter-pr6-runtime\covers`，并支持 `CHRONOSHELTER_COVER_SYNC_STATE_DIR` 指向非公开状态目录。
+
 ## User-Agent 与可选 Token
 
 默认 User-Agent：
@@ -87,78 +97,36 @@ var/cover-sync/
 
 ## 命令
 
-小规模测试，最多扫描一页、最多处理 10 条：
+小规模测试，最多扫描一页、最多处理 1 条（不会启动完整下载）：
 
 ```bash
-python tools/download_covers.py sync --max-pages=1 --max-items=1 --api-delay=0 --download-delay=0
+python tools/download_covers.py sync --max-pages=1 --max-items=1 --api-delay=0 --download-delay=0 --verbose
 ```
 
-首次全量同步或补齐缺失封面：
-
-```bash
-python tools/download_covers.py sync --resume
-```
-
-中断后继续：
+首次全量同步或中断恢复（只在已明确授权的 Windows/VPN 维护机器上运行）：
 
 ```bash
 python tools/download_covers.py sync --resume
 ```
 
-手动检查新动画和封面 URL 变化，只生成清单和报告，不立即替换图片：
+验证已下载文件并导出 PHP 可导入的 JSONL 映射：
 
 ```bash
-php bin/bangumi_covers.php check-updates --resume
+python tools/download_covers.py verify-files
+python tools/download_covers.py export-mapping --file=var/cover-sync/reports/cover-mapping.jsonl
 ```
 
-报告输出到：
-
-```text
-var/cover-sync/reports/cover-changes-YYYY-MM-DD.json
-var/cover-sync/reports/cover-changes-YYYY-MM-DD.txt
-```
-
-应用已发现的新封面或变化：
+部署顺序必须是先复制 `covers/subjects/` 文件到 NAS/正式服务器，再导入映射：
 
 ```bash
-php bin/bangumi_covers.php apply-updates --resume
+php bin/bangumi_covers.php import-mapping --file=var/cover-sync/reports/cover-mapping.jsonl
 ```
 
-重试失败项目：
-
-```bash
-php bin/bangumi_covers.php retry-failed
-```
-
-检查本地文件是否存在、是否损坏：
-
-```bash
-php bin/bangumi_covers.php verify-files
-```
-
-随机深度抽查远程内容是否在相同 URL 下变化：
-
-```bash
-php bin/bangumi_covers.php deep-check --sample=100
-```
-
-核实指定动画：
-
-```bash
-php bin/bangumi_covers.php deep-check --subject-id=491569
-```
-
-只有显式确认时才允许检查全部：
-
-```bash
-php bin/bangumi_covers.php deep-check --all --confirm-all
-```
-
-常用开发限制参数：`--max-pages=1`、`--max-items=10`、`--dry-run`。默认 `--download-delay=1`、`--api-delay=1`、`--concurrency=1`，实现保持串行保守下载。
+NAS/PHP 只验证 JSONL、本地封面并事务导入 MariaDB `cover_cache`；联网同步、文件验证和映射导出都由 Python 同步器完成。常用开发限制参数：`--max-pages=1`、`--max-items=1`、`--verbose`。默认 `--download-delay=1`、`--api-delay=1`，Python 同步器保持串行保守下载。
 
 ## 图片验证与安全替换
 
-CLI 只接受 JPEG、PNG、WebP。下载必须 HTTP 200、非空、Content-Type 与文件头匹配，且内容不能是 HTML/JSON 错误页或 Bangumi 默认无图占位；初始 URL 或手动重定向最终 URL 的 basename 为 `no_icon_subject.png` 时按无封面处理。离线验证会检查 finfo、getimagesize、格式结构和 GD/Imagick 完整解码，验证通过后才计算 SHA-256 并落盘。更新封面时先保存新文件并更新清单；旧文件始终保留，直到未来有生产引用证明的显式清理流程确认可删。下载失败时保留旧封面。
+CLI 只接受 JPEG、PNG、WebP。下载必须 HTTP 200、非空、Content-Type 与文件头匹配，且内容不能是 HTML/JSON 错误页或 Bangumi 默认无图占位；初始 URL 或手动重定向最终 URL 的 basename 为 `no_icon_subject.png` 时按无封面处理。离线 Python 验证会检查 Content-Type、文件头、格式结构、Pillow 完整解码、尺寸、大小和 SHA-256；验证通过后才原子落盘。更新封面时先保存新文件并更新清单；旧文件始终保留，直到未来有生产引用证明的显式清理流程确认可删。下载失败时保留旧封面。
 
 `remote_missing` 默认不会删除旧封面，避免 Bangumi 短暂异常导致批量丢图。未来如需清理，应使用显式清理参数并先审查目标。
 
@@ -188,12 +156,12 @@ var/cover-sync/covers.sqlite
 
 ## 映射导出和正式部署
 
-下载机器和正式服务器可能不是同一台机器。默认离线同步只写 SQLite 清单并把新下载记录保留为 `pending_deploy`，不要求也不强制连接生产 MariaDB；只有明确传入 `--write-mysql` 时才会尝试直接写 `cover_cache`，失败才会标记 `mapping_failed`。完成离线同步后，先运行 `php bin/bangumi_covers.php export-mapping --file=var/cover-sync/reports/cover-mapping.jsonl` 导出映射，再复制 `covers/subjects/` 中新增/更新的文件到正式服务器，并在正式服务器运行 `php bin/bangumi_covers.php import-mapping --file=cover-mapping.jsonl` 导入 `cover_cache`。不能只复制图片而不复制数据库映射；网页只根据 `cover_cache.local_path` 显示封面，网页本身永远不访问 Bangumi。确认网页使用新路径后，最后再清理不再被映射引用的旧文件。
+下载机器和正式服务器可能不是同一台机器。默认离线同步只写 SQLite 清单并把新下载记录保留为 `pending_deploy`，不要求也不强制连接生产 MariaDB；完成离线同步后，先运行 `python tools/download_covers.py export-mapping --file=var/cover-sync/reports/cover-mapping.jsonl` 导出映射，再复制 `covers/subjects/` 中新增/更新的文件到正式服务器，并在正式服务器运行 `php bin/bangumi_covers.php import-mapping --file=cover-mapping.jsonl` 导入 `cover_cache`。不能只复制图片而不复制数据库映射；网页只根据 `cover_cache.local_path` 显示封面，网页本身永远不访问 Bangumi。确认网页使用新路径后，最后再清理不再被映射引用的旧文件。
 
 
 ### 封面清理安全规则
 
-同步程序不会在新封面下载成功、SQLite 更新、MariaDB 写入或 import-mapping 时自动删除旧封面。SQLite 中旧的 `status` 列仅作兼容摘要，新的运行逻辑使用 `artifact_status` 表示最后成功文件是否可用、`deploy_status` 表示 `deployed`/`pending_deploy`/`mapping_failed`，以及 `last_check_result` 记录 `unchanged`、`updated`、`remote_missing`、`http_failed`、`local_invalid` 等最近检查结果。失败的 `pending_update`、`failed`、`mapping_failed`、`remote_missing` 不会污染网站当前 `cached` 映射；只要旧文件仍有效，export-mapping 会继续导出旧封面。需要清理时先运行 `php bin/bangumi_covers.php cleanup-covers` 查看 dry-run 候选；当前 `--apply` 会拒绝执行并返回 2，直到实现可靠的生产 `cover_cache` 引用或可信活动映射快照校验后才允许真实删除。
+同步程序不会在新封面下载成功、SQLite 更新、MariaDB 写入或 import-mapping 时自动删除旧封面。SQLite 中旧的 `status` 列仅作兼容摘要，新的运行逻辑使用 `artifact_status` 表示最后成功文件是否可用、`deploy_status` 表示 `deployed`/`pending_deploy`/`mapping_failed`，以及 `last_check_result` 记录 `unchanged`、`updated`、`remote_missing`、`http_failed`、`local_invalid` 等最近检查结果。失败的 `pending_update`、`failed`、`mapping_failed`、`remote_missing` 不会污染网站当前 `cached` 映射；只要旧文件仍有效，export-mapping 会继续导出旧封面。本 PR 不提供实际封面删除命令；旧文件在确认不再被生产 `cover_cache` 或可信映射引用前必须保留。
 
 ## Windows Python + VPN + NAS SMB 部署
 

@@ -221,27 +221,24 @@ mysql -u root -p chrono_bangumi < sql/migrations/004_add_subjects_pagination_ind
 小规模验证（不会启动完整下载）：
 
 ```bash
-python tools/download_covers.py sync --max-pages=1 --max-items=1 --api-delay=0 --download-delay=0
+python tools/download_covers.py sync --max-pages=1 --max-items=1 --api-delay=0 --download-delay=0 --verbose
 ```
 
-首次全量下载或中断恢复（只在已明确决定执行全量同步的维护机器上运行）：
+首次全量下载或中断恢复（只在已明确决定执行全量同步的 Windows/VPN 维护机器上运行）：
 
 ```bash
 python tools/download_covers.py sync --resume
 ```
 
-后续检查和应用更新：
+验证文件、导出映射，并在复制 `covers/subjects/` 后由 NAS/PHP 导入：
 
 ```bash
-php bin/bangumi_covers.php check-updates --resume
-php bin/bangumi_covers.php apply-updates --resume
-php bin/bangumi_covers.php retry-failed
-php bin/bangumi_covers.php deep-check --sample=100
-php bin/bangumi_covers.php export-mapping --file=var/cover-sync/reports/cover-mapping.jsonl
-php bin/bangumi_covers.php import-mapping --file=cover-mapping.jsonl
+python tools/download_covers.py verify-files
+python tools/download_covers.py export-mapping --file=var/cover-sync/reports/cover-mapping.jsonl
+php bin/bangumi_covers.php import-mapping --file=var/cover-sync/reports/cover-mapping.jsonl
 ```
 
-离线封面同步默认不连接生产 MariaDB，下载完成后记录为 `pending_deploy` 并通过 `export-mapping` 导出；先复制图片到正式服务器，再运行 `import-mapping` 更新 `cover_cache`。只有明确传入 `--write-mysql` 时才直接写 MariaDB，失败才视为 `mapping_failed`。
+离线 Python 封面同步不连接生产 MariaDB，下载完成后通过 `export-mapping` 导出；先复制图片到正式服务器，再运行 PHP `import-mapping` 更新 `cover_cache`。
 
 运行数据在非公开目录 `var/cover-sync/`，正式图片在 `covers/subjects/`，文件名保留 Bangumi `images.large` URL 的安全 basename，例如 `covers/subjects/000/001/1234_Ewjo.jpg`。正式服务器必须同时部署/同步 `covers/subjects/`、确保本地存在 `covers/logo.png`，并导入最新 `cover_cache.local_path` 映射；单独的 `var/cover-sync/covers.sqlite` 可只保留在维护机器。详见 `docs/bangumi_cover_sync.md`。
 
@@ -259,4 +256,4 @@ ON `subjects` (`type`, `name`(191), `name_cn`(191));
 
 ### 封面清理安全规则
 
-同步程序不会在新封面下载成功、SQLite 更新、MariaDB 写入或 import-mapping 时自动删除旧封面。SQLite 中旧的 `status` 列仅作兼容摘要，新的运行逻辑使用 `artifact_status` 表示最后成功文件是否可用、`deploy_status` 表示 `deployed`/`pending_deploy`/`mapping_failed`，以及 `last_check_result` 记录 `unchanged`、`updated`、`remote_missing`、`http_failed`、`local_invalid` 等最近检查结果。失败的 `pending_update`、`failed`、`mapping_failed`、`remote_missing` 不会污染网站当前 `cached` 映射；只要旧文件仍有效，export-mapping 会继续导出旧封面。需要清理时先运行 `php bin/bangumi_covers.php cleanup-covers` 查看 dry-run 候选；当前 `--apply` 会拒绝执行并返回 2，直到实现可靠的生产 `cover_cache` 引用或可信活动映射快照校验后才允许真实删除。
+同步程序不会在新封面下载成功、SQLite 更新、MariaDB 写入或 import-mapping 时自动删除旧封面。SQLite 中旧的 `status` 列仅作兼容摘要，新的运行逻辑使用 `artifact_status` 表示最后成功文件是否可用、`deploy_status` 表示 `deployed`/`pending_deploy`/`mapping_failed`，以及 `last_check_result` 记录 `unchanged`、`updated`、`remote_missing`、`http_failed`、`local_invalid` 等最近检查结果。失败的 `pending_update`、`failed`、`mapping_failed`、`remote_missing` 不会污染网站当前 `cached` 映射；只要旧文件仍有效，export-mapping 会继续导出旧封面。本 PR 不提供实际封面删除命令；旧文件在确认不再被生产 `cover_cache` 或可信映射引用前必须保留。

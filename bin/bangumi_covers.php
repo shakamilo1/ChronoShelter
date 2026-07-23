@@ -1228,23 +1228,8 @@ function import_mapping(array $options): array
         $pdo->rollBack();
         throw $exc;
     }
-    try {
-        if (isset($GLOBALS['cover_sync_after_mysql_mapping_commit']) && is_callable($GLOBALS['cover_sync_after_mysql_mapping_commit'])) {
-            ($GLOBALS['cover_sync_after_mysql_mapping_commit'])();
-        }
-        db()->beginTransaction();
-        $manifestStmt = db()->prepare("UPDATE cover_manifest SET deploy_status = 'deployed', status = 'downloaded', last_check_result = COALESCE(last_check_result, 'unchanged'), last_checked_at = :checked, checked_at = :checked WHERE subject_id = :id AND subject_type = 2");
-        foreach ($rows as $row) {
-            if ($row['status'] === 'cached') {
-                $manifestStmt->execute(['checked' => now_utc(), 'id' => $row['subject_id']]);
-            }
-        }
-        db()->commit();
-    } catch (Throwable $exc) {
-        if (db()->inTransaction()) {
-            db()->rollBack();
-        }
-        throw new RuntimeException('MariaDB mapping committed, but local SQLite deploy_status update failed: ' . $exc->getMessage(), 0, $exc);
+    if (isset($GLOBALS['cover_sync_after_mysql_mapping_commit']) && is_callable($GLOBALS['cover_sync_after_mysql_mapping_commit'])) {
+        ($GLOBALS['cover_sync_after_mysql_mapping_commit'])();
     }
     $stats['complete'] = true;
     return $stats;
@@ -1290,9 +1275,9 @@ function print_stats(array $stats): void
 
 function usage(): void
 {
-    echo "Usage: php bin/bangumi_covers.php <verify-files|import-mapping|cleanup-covers> [options]\n";
+    echo "Usage: php bin/bangumi_covers.php import-mapping --file=/path/to/cover-mapping.jsonl\n";
     echo "NAS/PHP no longer performs Bangumi network sync. Use: python tools/download_covers.py sync\n";
-    echo "Default sync is offline: it writes SQLite, sets deploy_status=pending_deploy, then use export-mapping/import-mapping after copying covers.\n";
+    echo "Python owns covers.sqlite; PHP only validates JSONL/local files and transactionally imports cover_cache.\n";
     echo "SQLite status is a deprecated compatibility summary; artifact_status, deploy_status and last_check_result carry the authoritative workflow state.\n";
 }
 
@@ -1303,10 +1288,8 @@ function main(array $argv): int
     try {
         ensure_runtime_dirs();
         $stats = match ($command) {
-            'sync', 'check-updates', 'apply-updates', 'retry-failed', 'deep-check', 'export-mapping' => throw new RuntimeException('PHP networking cover sync is disabled on NAS; use: python tools/download_covers.py sync'),
-            'verify-files' => verify_files($options),
+            'sync', 'check-updates', 'apply-updates', 'retry-failed', 'deep-check', 'export-mapping', 'verify-files', 'cleanup-covers' => throw new RuntimeException('PHP cover sync/verify/export is disabled on NAS; use Python for sync/verify/export and PHP only for import-mapping'),
             'import-mapping' => import_mapping($options),
-            'cleanup-covers' => cleanup_covers($options),
             default => null,
         };
         if ($stats === null) {

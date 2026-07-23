@@ -8,38 +8,53 @@ on:
       - 'codex/-bangumi'
 
 jobs:
-  test:
+  linux:
     runs-on: ubuntu-latest
     env:
       BANGUMI_ACCESS_TOKEN: ''
+      NO_PROXY: '*'
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Set up PHP
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.4'
           extensions: fileinfo, gd, pdo_sqlite, pdo_mysql, mysqli
           coverage: none
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
       - name: Install Python test dependencies
-        run: python -m pip install --upgrade pytest
-
+        run: python -m pip install --upgrade -r requirements-dev.txt
       - name: Run tests
         run: pytest -q
-
       - name: Lint PHP files
         run: |
           php -l bin/bangumi_covers.php
           php -l includes/image.php
           php -l includes/bangumi.php
           php -l subject.php
-
       - name: Compile Python helpers
         run: python3 -m py_compile importer/image_cache.py tools/download_covers.py tools/cache_covers.py
+
+  windows-python:
+    runs-on: windows-latest
+    env:
+      BANGUMI_ACCESS_TOKEN: ''
+      NO_PROXY: '*'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python test dependencies
+        shell: pwsh
+        run: python -m pip install --upgrade -r requirements-dev.txt
+      - name: Run Windows Python cover sync tests
+        shell: pwsh
+        run: pytest -q tests/test_python_cover_sync.py tests/test_image_cache.py
+      - name: PowerShell CLI smoke test
+        shell: pwsh
+        run: |
+          python tools/download_covers.py --help
+          python -m py_compile importer/image_cache.py tools/download_covers.py tools/cache_covers.py

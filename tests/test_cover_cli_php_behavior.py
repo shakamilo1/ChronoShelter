@@ -405,7 +405,7 @@ def test_apply_one_write_mysql_marks_deployed_only_after_mapping_success(tmp_pat
     assert data["tmp"] == []
 
 
-def test_import_mapping_updates_sqlite_only_after_mysql_commit_and_rolls_back_on_failure(tmp_path):
+def test_import_mapping_does_not_touch_python_sqlite_and_rolls_back_on_failure(tmp_path):
     state = tmp_path / "state"
     covers = tmp_path / "covers"
     mapping = tmp_path / "mapping.jsonl"
@@ -474,12 +474,6 @@ def test_import_mapping_updates_sqlite_only_after_mysql_commit_and_rolls_back_on
     $precheckError = null;
     try {{ import_mapping(['file' => $badNoCover]); }} catch (Throwable $e) {{ $precheckError = $e->getMessage(); }}
 
-    $fakeSqliteFail = new ImportFakeDb();
-    $GLOBALS['cover_sync_library_db'] = $fakeSqliteFail;
-    $GLOBALS['cover_sync_after_mysql_mapping_commit'] = static function() {{ throw new RuntimeException('fake sqlite deploy update failed'); }};
-    $sqliteError = null;
-    try {{ import_mapping(['file' => {json.dumps(str(mapping))}]); }} catch (Throwable $e) {{ $sqliteError = $e->getMessage(); }}
-
     echo json_encode([
         'fail_error' => $failError,
         'fail_rollback' => $fakeFail->rollbackCalls,
@@ -490,8 +484,6 @@ def test_import_mapping_updates_sqlite_only_after_mysql_commit_and_rolls_back_on
         'after_ok' => [$afterOk1, $afterOk2],
         'precheck_error' => $precheckError,
         'precheck_execute_calls' => $fakePrecheck->executeCalls,
-        'sqlite_error' => $sqliteError,
-        'sqlite_mysql_commits' => $fakeSqliteFail->commitCalls,
     ], JSON_UNESCAPED_SLASHES);
     ?>
     """)
@@ -507,8 +499,6 @@ def test_import_mapping_updates_sqlite_only_after_mysql_commit_and_rolls_back_on
     assert data["after_fail"] == ["pending_deploy", "pending_deploy"]
     assert data["ok_commits"] == 1
     assert data["ok_stats"] == 2
-    assert data["after_ok"] == ["deployed", "deployed"]
+    assert data["after_ok"] == ["pending_deploy", "pending_deploy"]
     assert "no_cover mapping must not include file fields" in data["precheck_error"]
     assert data["precheck_execute_calls"] == 0
-    assert "MariaDB mapping committed, but local SQLite deploy_status update failed" in data["sqlite_error"]
-    assert data["sqlite_mysql_commits"] == 1
