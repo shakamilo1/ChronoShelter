@@ -259,4 +259,4 @@ ON `subjects` (`type`, `name`(191), `name_cn`(191));
 
 ### 封面清理安全规则
 
-同步程序不会在新封面下载成功、SQLite 更新、MariaDB 写入或 import-mapping 时自动删除旧封面。失败的 `pending_update`、`failed`、`mapping_failed`、`remote_missing` 不会污染网站当前 `cached` 映射；只要旧文件仍有效，export-mapping 会继续导出旧封面。需要清理时先运行 `php bin/bangumi_covers.php cleanup-covers` 查看 dry-run 候选；当前 `--apply` 会拒绝执行并返回 2，直到实现可靠的生产 `cover_cache` 引用或可信活动映射快照校验后才允许真实删除。
+同步程序不会在新封面下载成功、SQLite 更新、MariaDB 写入或 import-mapping 时自动删除旧封面。SQLite 中旧的 `status` 列仅作兼容摘要，新的运行逻辑使用 `artifact_status` 表示最后成功文件是否可用、`deploy_status` 表示 `deployed`/`pending_deploy`/`mapping_failed`，以及 `last_check_result` 记录 `unchanged`、`updated`、`remote_missing`、`http_failed`、`local_invalid` 等最近检查结果。失败的 `pending_update`、`failed`、`mapping_failed`、`remote_missing` 不会污染网站当前 `cached` 映射；只要旧文件仍有效，export-mapping 会继续导出旧封面。需要清理时先运行 `php bin/bangumi_covers.php cleanup-covers` 查看 dry-run 候选；当前 `--apply` 会拒绝执行并返回 2，直到实现可靠的生产 `cover_cache` 引用或可信活动映射快照校验后才允许真实删除。

@@ -83,7 +83,7 @@ var/cover-sync/
 └── reports/
 ```
 
-临时下载文件写入 `var/cover-sync/tmp/`，不会写入公开的 `covers/`。SQLite 记录 `subject_id`、固定的 `subject_type=2`、`downloaded_url`、`observed_url`、`relative_path`、`mime_type`、`file_extension`、`file_size`、`sha256`、`etag`、`last_modified`、状态、时间戳、重试次数和错误信息；同时预留并幂等迁移 `artifact_status`、`deploy_status`、`last_check_result`、`last_error`、`checked_at`、`last_success_at`，用于区分最后成功文件、部署状态和本次远端检查结果。同步进度记录 `run_id`、`run_type`、`next_offset`、`total`、开始/更新时间、完成时间和运行状态。
+临时下载文件写入 `var/cover-sync/tmp/`，不会写入公开的 `covers/`。测试或隔离运行可用 `CHRONOSHELTER_COVER_SYNC_STATE_DIR` 指向临时状态目录、`CHRONOSHELTER_COVERS_DIR` 指向临时封面根目录；正式部署通常使用配置中的 `covers.directory`。SQLite 记录 `subject_id`、固定的 `subject_type=2`、`downloaded_url`、`observed_url`、`relative_path`、`mime_type`、`file_extension`、`file_size`、`sha256`、`etag`、`last_modified`、状态、时间戳、重试次数和错误信息；同时预留并幂等迁移 `artifact_status`、`deploy_status`、`last_check_result`、`last_error`、`checked_at`、`last_success_at`，用于区分最后成功文件、部署状态和本次远端检查结果。同步进度记录 `run_id`、`run_type`、`next_offset`、`total`、开始/更新时间、完成时间和运行状态。
 
 ## 命令
 
@@ -193,4 +193,4 @@ var/cover-sync/covers.sqlite
 
 ### 封面清理安全规则
 
-同步程序不会在新封面下载成功、SQLite 更新、MariaDB 写入或 import-mapping 时自动删除旧封面。失败的 `pending_update`、`failed`、`mapping_failed`、`remote_missing` 不会污染网站当前 `cached` 映射；只要旧文件仍有效，export-mapping 会继续导出旧封面。需要清理时先运行 `php bin/bangumi_covers.php cleanup-covers` 查看 dry-run 候选；当前 `--apply` 会拒绝执行并返回 2，直到实现可靠的生产 `cover_cache` 引用或可信活动映射快照校验后才允许真实删除。
+同步程序不会在新封面下载成功、SQLite 更新、MariaDB 写入或 import-mapping 时自动删除旧封面。SQLite 中旧的 `status` 列仅作兼容摘要，新的运行逻辑使用 `artifact_status` 表示最后成功文件是否可用、`deploy_status` 表示 `deployed`/`pending_deploy`/`mapping_failed`，以及 `last_check_result` 记录 `unchanged`、`updated`、`remote_missing`、`http_failed`、`local_invalid` 等最近检查结果。失败的 `pending_update`、`failed`、`mapping_failed`、`remote_missing` 不会污染网站当前 `cached` 映射；只要旧文件仍有效，export-mapping 会继续导出旧封面。需要清理时先运行 `php bin/bangumi_covers.php cleanup-covers` 查看 dry-run 候选；当前 `--apply` 会拒绝执行并返回 2，直到实现可靠的生产 `cover_cache` 引用或可信活动映射快照校验后才允许真实删除。

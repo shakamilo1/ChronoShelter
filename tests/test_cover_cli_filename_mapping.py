@@ -66,7 +66,7 @@ def test_export_mapping_uses_valid_existing_success_file_for_transient_statuses(
     assert "local_cover_ok($row['local_path'], $row)" in CLI
     assert "$export['status'] = 'cached'" in CLI
     assert "pending_update" not in CLI[CLI.index("function export_mapping"):CLI.index("function import_mapping_row_is_safe")]
-    assert "remote_missing" not in CLI[CLI.index("function export_mapping"):CLI.index("function import_mapping_row_is_safe")]
+    assert "last_check_result" in CLI[CLI.index("function export_mapping"):CLI.index("function import_mapping_row_is_safe")]
 
 
 def test_apply_one_never_deletes_old_cover_files_automatically():
@@ -113,10 +113,10 @@ def test_resume_cursor_advances_per_consumed_api_record():
 
 
 def test_versioned_local_filename_for_same_remote_name_different_sha():
-    apply_block = CLI[CLI.index("function apply_one"):CLI.index("function sync_mysql_cover_cache")]
-    assert "versioned_cover_filename($remoteFilename, $meta['sha256'], 12)" in apply_block
-    assert "versioned_cover_filename($remoteFilename, $meta['sha256'], 64)" in apply_block
-    assert "$existingSha === $meta['sha256']" in apply_block
+    store_block = CLI[CLI.index("function store_verified_tmp_cover"):CLI.index("function apply_one")]
+    assert "foreach ([12, 64] as $length)" in store_block
+    assert "versioned_cover_filename($remoteFilename, $meta['sha256'], $length)" in store_block
+    assert "$existingSha === $meta['sha256']" in store_block
     assert "(?:--[a-f0-9]{12}|--[a-f0-9]{64})?" in CLI
     assert "move_no_clobber" in CLI
 

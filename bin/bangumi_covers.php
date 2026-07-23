@@ -70,8 +70,8 @@ function now_utc(): string
 function cover_sync_paths(): array
 {
     $config = app_config()['covers'] ?? [];
-    $coversDir = rtrim((string) ($config['directory'] ?? dirname(__DIR__) . '/covers'), "/\\");
-    $stateDir = dirname(__DIR__) . '/var/cover-sync';
+    $coversDir = rtrim((string) (getenv('CHRONOSHELTER_COVERS_DIR') ?: ($config['directory'] ?? dirname(__DIR__) . '/covers')), "/\\");
+    $stateDir = rtrim((string) (getenv('CHRONOSHELTER_COVER_SYNC_STATE_DIR') ?: dirname(__DIR__) . '/var/cover-sync'), "/\\");
     return [
         'covers' => $coversDir,
         'subjects' => trim((string) ($config['subjects_directory'] ?? 'subjects'), '/'),
@@ -144,6 +144,30 @@ function db(): PDO
             // Column already exists.
         }
     }
+    $pdo->exec("UPDATE cover_manifest
+        SET artifact_status = CASE
+                WHEN relative_path IS NOT NULL AND relative_path <> '' THEN 'available'
+                WHEN status = 'no_cover' THEN 'missing'
+                ELSE COALESCE(artifact_status, 'missing')
+            END
+        WHERE artifact_status IS NULL");
+    $pdo->exec("UPDATE cover_manifest
+        SET deploy_status = CASE
+                WHEN status = 'mapping_failed' THEN 'mapping_failed'
+                WHEN status = 'pending_deploy' THEN 'pending_deploy'
+                WHEN status IN ('downloaded', 'unchanged') AND relative_path IS NOT NULL AND relative_path <> '' THEN 'deployed'
+                ELSE COALESCE(deploy_status, 'pending_deploy')
+            END
+        WHERE deploy_status IS NULL");
+    $pdo->exec("UPDATE cover_manifest
+        SET last_check_result = CASE
+                WHEN status = 'remote_missing' THEN 'remote_missing'
+                WHEN status = 'failed' THEN 'http_failed'
+                WHEN status = 'pending_update' THEN 'updated'
+                WHEN status = 'unchanged' THEN 'unchanged'
+                ELSE COALESCE(last_check_result, status)
+            END
+        WHERE last_check_result IS NULL");
     $pdo->exec('CREATE TABLE IF NOT EXISTS sync_runs (
         run_id TEXT PRIMARY KEY,
         run_type TEXT NOT NULL,
@@ -168,7 +192,7 @@ function safe_remote_filename(int $subjectId, string $url, string $detectedExten
 {
     $path = parse_url($url, PHP_URL_PATH);
     $basename = is_string($path) ? rawurldecode(basename($path)) : '';
-    if (preg_match('/[\\\/]|\.\.|[\x00-\x1F\x7F]/', $basename)) {
+    if (preg_match('#[\\\\/]|\.\.|[\x00-\x1F\x7F]#', $basename)) {
         $basename = '';
     }
     if (preg_match('/^' . preg_quote((string) $subjectId, '/') . '_[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$/i', $basename, $m)) {
@@ -463,7 +487,6 @@ function decode_image_fully(string $data): void
         if (function_exists('imagecreatefromstring')) {
             $image = imagecreatefromstring($data);
             if ($image === false) throw new RuntimeException('image decode failed');
-            imagedestroy($image);
             return;
         }
         $image = new Imagick();
@@ -549,24 +572,33 @@ function upsert_observed(int $subjectId, ?string $url, string $mode): string
     $pdo = db();
     $existing = manifest_row($subjectId);
     $now = now_utc();
+    $hasArtifact = $existing && !empty($existing['relative_path']) && local_cover_ok($existing['relative_path'] ?? null, $existing);
     if ($url === null || $url === '') {
-        $status = $existing && $existing['downloaded_url'] ? 'remote_missing' : 'no_cover';
-    } elseif (!$existing) {
+        $status = $hasArtifact ? 'remote_missing' : 'no_cover';
+        $artifact = $hasArtifact ? 'available' : 'missing';
+        $result = 'remote_missing';
+    } elseif (!$existing || !$hasArtifact) {
         $status = 'pending';
-    } elseif (($existing['downloaded_url'] ?? null) === $url && local_cover_ok($existing['relative_path'] ?? null, $existing)) {
-        if (in_array(($existing['status'] ?? ''), ['pending_deploy', 'mapping_failed'], true)) {
-            $status = (string) $existing['status'];
-        } else {
-            $status = $mode === 'sync' ? 'downloaded' : 'unchanged';
-        }
+        $artifact = $hasArtifact ? 'available' : 'missing';
+        $result = 'updated';
+    } elseif (($existing['downloaded_url'] ?? null) === $url) {
+        $status = in_array(($existing['deploy_status'] ?? ''), ['pending_deploy', 'mapping_failed'], true)
+            ? (string) $existing['deploy_status']
+            : 'unchanged';
+        $artifact = 'available';
+        $result = 'unchanged';
     } else {
-        $status = ($existing['downloaded_url'] ?? null) ? 'pending_update' : 'pending';
+        $status = 'pending_update';
+        $artifact = 'available';
+        $result = 'updated';
     }
-    $stmt = $pdo->prepare('INSERT INTO cover_manifest (subject_id, subject_type, observed_url, status, last_seen_at, last_checked_at)
-        VALUES (:id, 2, :url, :status, :seen, :checked)
+    $deploySql = $existing ? '' : ", deploy_status = 'pending_deploy'";
+    $stmt = $pdo->prepare("INSERT INTO cover_manifest (subject_id, subject_type, observed_url, status, last_seen_at, last_checked_at, artifact_status, deploy_status, last_check_result, checked_at)
+        VALUES (:id, 2, :url, :status, :seen, :checked, :artifact, 'pending_deploy', :result, :checked)
         ON CONFLICT(subject_id) DO UPDATE SET observed_url = excluded.observed_url, status = excluded.status,
-        last_seen_at = excluded.last_seen_at, last_checked_at = excluded.last_checked_at, error_message = NULL');
-    $stmt->execute(['id' => $subjectId, 'url' => $url, 'status' => $status, 'seen' => $now, 'checked' => $now]);
+        last_seen_at = excluded.last_seen_at, last_checked_at = excluded.last_checked_at, checked_at = excluded.checked_at,
+        artifact_status = :artifact, last_check_result = :result, last_error = NULL, error_message = NULL{$deploySql}");
+    $stmt->execute(['id' => $subjectId, 'url' => $url, 'status' => $status, 'seen' => $now, 'checked' => $now, 'artifact' => $artifact, 'result' => $result]);
     return $status;
 }
 
@@ -605,7 +637,10 @@ function local_cover_ok(?string $relativePath, ?array $row = null): bool
 
 function mark_failed(int $subjectId, string $message): void
 {
-    $stmt = db()->prepare('UPDATE cover_manifest SET status = \'failed\', retry_count = retry_count + 1, error_message = :error, last_checked_at = :checked WHERE subject_id = :id');
+    $stmt = db()->prepare("UPDATE cover_manifest
+        SET status = 'failed', retry_count = retry_count + 1, error_message = :error,
+            last_check_result = 'http_failed', last_error = :error, last_checked_at = :checked, checked_at = :checked
+        WHERE subject_id = :id");
     $stmt->execute(['id' => $subjectId, 'error' => mb_substr($message, 0, 1000), 'checked' => now_utc()]);
 }
 
@@ -641,6 +676,40 @@ function versioned_cover_filename(string $remoteFilename, string $sha256, int $l
     return $stem . '--' . substr($sha256, 0, $length) . '.' . $extension;
 }
 
+function store_verified_tmp_cover(int $subjectId, string $sourceUrl, array $meta): array
+{
+    $remoteFilename = safe_remote_filename($subjectId, $sourceUrl, $meta['extension']);
+    $relative = cover_relative_path($subjectId, $remoteFilename);
+    $target = cover_absolute_path($relative);
+    $tmp = (string) $meta['tmp_path'];
+    if (is_file($target)) {
+        $existingSha = hash_file('sha256', $target);
+        if ($existingSha === $meta['sha256']) {
+            return ['remote_filename' => $remoteFilename, 'relative_path' => $relative, 'stored' => false];
+        }
+        foreach ([12, 64] as $length) {
+            $localFilename = versioned_cover_filename($remoteFilename, $meta['sha256'], $length);
+            $relative = cover_relative_path($subjectId, $localFilename);
+            $target = cover_absolute_path($relative);
+            if (!is_file($target)) {
+                break;
+            }
+            if (hash_file('sha256', $target) === $meta['sha256']) {
+                return ['remote_filename' => $remoteFilename, 'relative_path' => $relative, 'stored' => false];
+            }
+            if ($length === 64) {
+                throw new RuntimeException('versioned cover SHA collision for subject_id=' . $subjectId);
+            }
+        }
+    }
+    $targetDir = dirname($target);
+    if (!is_dir($targetDir) && !mkdir($targetDir, 0775, true) && !is_dir($targetDir)) {
+        throw new RuntimeException('cannot create cover directory');
+    }
+    move_no_clobber($tmp, $target);
+    return ['remote_filename' => $remoteFilename, 'relative_path' => $relative, 'stored' => true];
+}
+
 function apply_one(int $subjectId, bool $dryRun = false): bool
 {
     $row = manifest_row($subjectId);
@@ -649,53 +718,32 @@ function apply_one(int $subjectId, bool $dryRun = false): bool
         echo "dry-run download subject_id={$subjectId} url={$row['observed_url']}\n";
         return true;
     }
-    db()->prepare('UPDATE cover_manifest SET status = \'downloading\' WHERE subject_id = :id')->execute(['id' => $subjectId]);
+    $ownedTmp = null;
+    db()->prepare("UPDATE cover_manifest SET status = 'downloading', last_check_result = 'downloading', checked_at = :checked WHERE subject_id = :id")
+        ->execute(['checked' => now_utc(), 'id' => $subjectId]);
     try {
         $meta = download_image_to_tmp($subjectId, $row['observed_url']);
-        $remoteFilename = safe_remote_filename($subjectId, (string) $row['observed_url'], $meta['extension']);
-        $relative = cover_relative_path($subjectId, $remoteFilename);
-        $target = cover_absolute_path($relative);
-        if (is_file($target)) {
-            $existingSha = hash_file('sha256', $target);
-            if ($existingSha === $meta['sha256']) {
-                @unlink($meta['tmp_path']);
-                $ownedTmp = null;
-            } else {
-                $localFilename = versioned_cover_filename($remoteFilename, $meta['sha256'], 12);
-                $relative = cover_relative_path($subjectId, $localFilename);
-                $target = cover_absolute_path($relative);
-                if (is_file($target)) {
-                    $versionedSha = hash_file('sha256', $target);
-                    if ($versionedSha === $meta['sha256']) {
-                        @unlink($meta['tmp_path']);
-                        $ownedTmp = null;
-                    } else {
-                        $localFilename = versioned_cover_filename($remoteFilename, $meta['sha256'], 64);
-                        $relative = cover_relative_path($subjectId, $localFilename);
-                        $target = cover_absolute_path($relative);
-                    }
-                }
-            }
+        $ownedTmp = $meta['tmp_path'] ?? null;
+        if (!is_string($ownedTmp) || $ownedTmp === '' || !is_file($ownedTmp)) {
+            throw new RuntimeException('download did not return an owned temp file');
         }
-        if (is_file($meta['tmp_path'])) {
-            $targetDir = dirname($target);
-            if (!is_dir($targetDir) && !mkdir($targetDir, 0775, true) && !is_dir($targetDir)) {
-                throw new RuntimeException('cannot create cover directory');
-            }
-            move_no_clobber($meta['tmp_path'], $target);
+        $stored = store_verified_tmp_cover($subjectId, (string) $row['observed_url'], $meta);
+        if (!is_file($ownedTmp)) {
             $ownedTmp = null;
         }
+        $remoteFilename = $stored['remote_filename'];
+        $relative = $stored['relative_path'];
         $stmt = db()->prepare('UPDATE cover_manifest SET downloaded_url = observed_url, remote_filename = :remote_filename, relative_path = :path, mime_type = :mime,
             file_extension = :ext, file_size = :size, sha256 = :sha, etag = :etag, last_modified = :lm,
-            last_downloaded_at = :downloaded, last_checked_at = :checked, status = :status, artifact_status = \'available\', deploy_status = :deploy_status, last_check_result = \'downloaded\', last_success_at = :downloaded, error_message = NULL WHERE subject_id = :id');
+            last_downloaded_at = :downloaded, last_checked_at = :checked, checked_at = :checked, status = :status, artifact_status = \'available\', deploy_status = :deploy_status, last_check_result = \'updated\', last_success_at = :downloaded, error_message = NULL, last_error = NULL WHERE subject_id = :id');
         $stmt->execute(['status' => ((bool) $GLOBALS['cover_sync_options']['write-mysql'] ? 'downloaded' : 'pending_deploy'), 'deploy_status' => ((bool) $GLOBALS['cover_sync_options']['write-mysql'] ? 'deployed' : 'pending_deploy'), 'remote_filename' => $remoteFilename, 'path' => $relative, 'mime' => $meta['mime_type'], 'ext' => $meta['extension'], 'size' => $meta['file_size'], 'sha' => $meta['sha256'], 'etag' => $meta['etag'], 'lm' => $meta['last_modified'], 'downloaded' => now_utc(), 'checked' => now_utc(), 'id' => $subjectId]);
         if ((bool) $GLOBALS['cover_sync_options']['write-mysql']) {
             try {
                 sync_mysql_cover_cache($subjectId, 'cached', $remoteFilename, (string) $row['observed_url'], $relative, null, $meta);
-                db()->prepare("UPDATE cover_manifest SET status = 'downloaded', last_checked_at = :checked WHERE subject_id = :id")
+                db()->prepare("UPDATE cover_manifest SET status = 'downloaded', deploy_status = 'deployed', last_checked_at = :checked, checked_at = :checked WHERE subject_id = :id")
                     ->execute(['checked' => now_utc(), 'id' => $subjectId]);
             } catch (Throwable $mappingError) {
-                db()->prepare("UPDATE cover_manifest SET status = 'mapping_failed', error_message = :error, last_checked_at = :checked WHERE subject_id = :id")
+                db()->prepare("UPDATE cover_manifest SET status = 'mapping_failed', deploy_status = 'mapping_failed', error_message = :error, last_error = :error, last_checked_at = :checked, checked_at = :checked WHERE subject_id = :id")
                     ->execute(['error' => mb_substr('cover_cache mapping failed: ' . $mappingError->getMessage(), 0, 1000), 'checked' => now_utc(), 'id' => $subjectId]);
                 return false;
             }
@@ -703,9 +751,11 @@ function apply_one(int $subjectId, bool $dryRun = false): bool
         // Keep previous cover files until an explicit cleanup-covers --apply run.
         return true;
     } catch (RemoteMissingCover $exc) {
-        $status = !empty($row['relative_path']) ? 'remote_missing' : 'no_cover';
-        db()->prepare('UPDATE cover_manifest SET status = :status, last_check_result = :result, last_error = :error, last_checked_at = :checked WHERE subject_id = :id')
-            ->execute(['status' => $status, 'result' => 'remote_missing', 'error' => mb_substr($exc->getMessage(), 0, 1000), 'checked' => now_utc(), 'id' => $subjectId]);
+        $hasArtifact = !empty($row['relative_path']);
+        $status = $hasArtifact ? 'remote_missing' : 'no_cover';
+        $artifact = $hasArtifact ? 'available' : 'missing';
+        db()->prepare('UPDATE cover_manifest SET status = :status, artifact_status = :artifact, last_check_result = :result, last_error = :error, last_checked_at = :checked, checked_at = :checked WHERE subject_id = :id')
+            ->execute(['status' => $status, 'artifact' => $artifact, 'result' => 'remote_missing', 'error' => mb_substr($exc->getMessage(), 0, 1000), 'checked' => now_utc(), 'id' => $subjectId]);
         return false;
     } catch (Throwable $exc) {
         mark_failed($subjectId, $exc->getMessage());
@@ -714,7 +764,9 @@ function apply_one(int $subjectId, bool $dryRun = false): bool
         return false;
     } finally {
         if (is_string($ownedTmp) && is_file($ownedTmp)) {
-            @unlink($ownedTmp);
+            if (!@unlink($ownedTmp)) {
+                error_log('ChronoShelter cover sync could not remove temp file: ' . $ownedTmp);
+            }
         }
     }
 }
@@ -894,18 +946,27 @@ function strict_manifest_cover_ok(array $row, ?string &$error = null): bool
 function verify_files(array $options): array
 {
     $stats = stats_template('verify-files');
+    $hadFailure = false;
     $rows = db()->query("SELECT subject_id, relative_path, mime_type, file_extension, file_size, sha256 FROM cover_manifest WHERE subject_type = 2 AND relative_path IS NOT NULL")->fetchAll(PDO::FETCH_ASSOC);
     foreach ($rows as $row) {
         $stats['scanned_anime']++;
         $error = null;
         if (!strict_manifest_cover_ok($row, $error)) {
-            db()->prepare("UPDATE cover_manifest SET status = 'pending_update', error_message = :error WHERE subject_id = :id")->execute(['error' => 'local file invalid: ' . $error, 'id' => $row['subject_id']]);
+            $hadFailure = true;
+            db()->prepare("UPDATE cover_manifest
+                SET artifact_status = 'invalid', last_check_result = 'local_invalid',
+                    last_error = :error, error_message = :error, last_checked_at = :checked, checked_at = :checked
+                WHERE subject_id = :id")
+                ->execute(['error' => 'local file invalid: ' . $error, 'checked' => now_utc(), 'id' => $row['subject_id']]);
             $stats['url_changes']++;
         } else {
             $stats['existing_skipped']++;
         }
     }
-    $stats['complete'] = true;
+    if ($hadFailure) {
+        $stats['update_failed']++;
+    }
+    $stats['complete'] = !$hadFailure;
     $stats['manifest_records'] = (int) db()->query('SELECT COUNT(*) FROM cover_manifest')->fetchColumn();
     return $stats;
 }
@@ -928,6 +989,7 @@ function deep_check(array $options): array
     }
     foreach (array_filter($rows) as $row) {
         $stats['scanned_anime']++;
+        $ownedTmp = null;
         $headers = [];
         if ($row['etag']) $headers[] = 'If-None-Match: ' . $row['etag'];
         if ($row['last_modified']) $headers[] = 'If-Modified-Since: ' . $row['last_modified'];
@@ -935,32 +997,48 @@ function deep_check(array $options): array
         try {
             $meta = download_image_to_tmp((int) $row['subject_id'], (string) $row['downloaded_url'], $headers);
             if (($meta['not_modified'] ?? false) === true) {
-                $nextStatus = in_array(($row['status'] ?? ''), ['pending_deploy', 'mapping_failed'], true) ? (string) $row['status'] : 'unchanged';
-                db()->prepare('UPDATE cover_manifest SET status = :status, last_checked_at = :checked WHERE subject_id = :id')->execute(['status' => $nextStatus, 'checked' => now_utc(), 'id' => $row['subject_id']]);
+                db()->prepare("UPDATE cover_manifest SET last_check_result = 'unchanged', last_error = NULL, last_checked_at = :checked, checked_at = :checked WHERE subject_id = :id")
+                    ->execute(['checked' => now_utc(), 'id' => $row['subject_id']]);
                 $stats['existing_skipped']++;
                 continue;
             }
+            $ownedTmp = $meta['tmp_path'] ?? null;
+            if (!is_string($ownedTmp) || $ownedTmp === '' || !is_file($ownedTmp)) {
+                throw new RuntimeException('deep-check did not return an owned temp file');
+            }
             if (($meta['sha256'] ?? '') !== ($row['sha256'] ?? '')) {
-                if (isset($meta['tmp_path']) && is_file($meta['tmp_path'])) { @unlink($meta['tmp_path']); }
-                $nextStatus = in_array(($row['status'] ?? ''), ['pending_deploy', 'mapping_failed'], true) ? (string) $row['status'] : 'pending_update';
-                db()->prepare('UPDATE cover_manifest SET status = :status, last_check_result = :result, error_message = :error, last_checked_at = :checked WHERE subject_id = :id')->execute(['status' => $nextStatus, 'result' => 'updated', 'error' => 'deep-check sha256 changed', 'checked' => now_utc(), 'id' => $row['subject_id']]);
+                $stored = store_verified_tmp_cover((int) $row['subject_id'], (string) $row['downloaded_url'], $meta);
+                if (!is_file($ownedTmp)) {
+                    $ownedTmp = null;
+                }
+                db()->prepare("UPDATE cover_manifest SET remote_filename = :remote_filename, relative_path = :path, mime_type = :mime,
+                    file_extension = :ext, file_size = :size, sha256 = :sha, etag = :etag, last_modified = :lm,
+                    last_downloaded_at = :downloaded, last_checked_at = :checked, checked_at = :checked,
+                    artifact_status = 'available', deploy_status = CASE WHEN deploy_status = 'mapping_failed' THEN 'mapping_failed' ELSE 'pending_deploy' END,
+                    status = CASE WHEN deploy_status = 'mapping_failed' THEN 'mapping_failed' ELSE 'pending_deploy' END,
+                    last_check_result = 'updated', last_success_at = :downloaded, error_message = NULL, last_error = NULL
+                    WHERE subject_id = :id")
+                    ->execute(['remote_filename' => $stored['remote_filename'], 'path' => $stored['relative_path'], 'mime' => $meta['mime_type'], 'ext' => $meta['extension'], 'size' => $meta['file_size'], 'sha' => $meta['sha256'], 'etag' => $meta['etag'], 'lm' => $meta['last_modified'], 'downloaded' => now_utc(), 'checked' => now_utc(), 'id' => $row['subject_id']]);
                 $stats['deep_changes']++;
             } else {
-                @unlink($meta['tmp_path']);
-                $ownedTmp = null;
-                $nextStatus = in_array(($row['status'] ?? ''), ['pending_deploy', 'mapping_failed'], true) ? (string) $row['status'] : 'unchanged';
-                db()->prepare('UPDATE cover_manifest SET status = :status, last_checked_at = :checked WHERE subject_id = :id')->execute(['status' => $nextStatus, 'checked' => now_utc(), 'id' => $row['subject_id']]);
+                db()->prepare("UPDATE cover_manifest SET last_check_result = 'unchanged', last_error = NULL, last_checked_at = :checked, checked_at = :checked WHERE subject_id = :id")
+                    ->execute(['checked' => now_utc(), 'id' => $row['subject_id']]);
                 $stats['existing_skipped']++;
             }
-            if (isset($meta['tmp_path']) && is_file($meta['tmp_path'])) { @unlink($meta['tmp_path']); }
+        } catch (RemoteMissingCover $exc) {
+            db()->prepare("UPDATE cover_manifest SET last_check_result = 'remote_missing', last_error = :error, last_checked_at = :checked, checked_at = :checked WHERE subject_id = :id")
+                ->execute(['error' => mb_substr($exc->getMessage(), 0, 1000), 'checked' => now_utc(), 'id' => $row['subject_id']]);
+            $stats['remote_missing']++;
         } catch (Throwable $exc) {
-            if (in_array(($row['status'] ?? ''), ['pending_deploy', 'mapping_failed'], true)) {
-                db()->prepare('UPDATE cover_manifest SET error_message = :error, last_checked_at = :checked WHERE subject_id = :id')
-                    ->execute(['error' => mb_substr($exc->getMessage(), 0, 1000), 'checked' => now_utc(), 'id' => $row['subject_id']]);
-            } else {
-                mark_failed((int) $row['subject_id'], $exc->getMessage());
-            }
+            db()->prepare("UPDATE cover_manifest SET last_check_result = 'http_failed', last_error = :error, error_message = :error, last_checked_at = :checked, checked_at = :checked WHERE subject_id = :id")
+                ->execute(['error' => mb_substr($exc->getMessage(), 0, 1000), 'checked' => now_utc(), 'id' => $row['subject_id']]);
             $stats['update_failed']++;
+        } finally {
+            if (is_string($ownedTmp) && is_file($ownedTmp)) {
+                if (!@unlink($ownedTmp)) {
+                    error_log('ChronoShelter cover sync could not remove temp file: ' . $ownedTmp);
+                }
+            }
         }
         cover_sync_sleep((float) $options['download-delay']);
     }
@@ -977,7 +1055,7 @@ function export_mapping(array $options): array
     if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
         throw new RuntimeException('cannot create export directory');
     }
-    $rows = db()->query("SELECT subject_id, status, remote_filename, downloaded_url AS source_url, relative_path AS local_path, mime_type AS content_type, file_size, sha256, COALESCE(last_downloaded_at, last_checked_at) AS updated_at FROM cover_manifest WHERE subject_type = 2 ORDER BY subject_id")->fetchAll(PDO::FETCH_ASSOC);
+    $rows = db()->query("SELECT subject_id, status, artifact_status, deploy_status, last_check_result, remote_filename, downloaded_url AS source_url, relative_path AS local_path, mime_type AS content_type, file_size, sha256, COALESCE(last_downloaded_at, last_checked_at) AS updated_at FROM cover_manifest WHERE subject_type = 2 ORDER BY subject_id")->fetchAll(PDO::FETCH_ASSOC);
     $handle = fopen((string) $file, 'wb');
     if ($handle === false) {
         throw new RuntimeException('cannot open export file');
@@ -987,7 +1065,7 @@ function export_mapping(array $options): array
         if (!empty($row['local_path']) && local_cover_ok($row['local_path'], $row)) {
             $export = $row;
             $export['status'] = 'cached';
-        } elseif (($row['status'] ?? '') === 'no_cover' && empty($row['downloaded_url']) && empty($row['local_path'])) {
+        } elseif (($row['artifact_status'] ?? '') === 'missing' && empty($row['source_url']) && empty($row['local_path']) && (($row['last_check_result'] ?? '') === 'remote_missing' || ($row['status'] ?? '') === 'no_cover')) {
             $export = [
                 'subject_id' => (int) $row['subject_id'],
                 'status' => 'no_cover',
@@ -1135,6 +1213,10 @@ function import_mapping(array $options): array
                 sha256 = IF(VALUES(status) = \'no_cover\' AND status = \'cached\', sha256, VALUES(sha256)), updated_at = VALUES(updated_at)');
         foreach ($rows as $row) {
             $stmt->execute($row);
+            if ($row['status'] === 'cached') {
+                db()->prepare("UPDATE cover_manifest SET deploy_status = 'deployed', status = 'downloaded', last_check_result = COALESCE(last_check_result, 'unchanged'), last_checked_at = :checked, checked_at = :checked WHERE subject_id = :id")
+                    ->execute(['checked' => now_utc(), 'id' => $row['subject_id']]);
+            }
             $stats['update_success']++;
         }
         $pdo->commit();
@@ -1188,6 +1270,8 @@ function usage(): void
 {
     echo "Usage: php bin/bangumi_covers.php <sync|check-updates|apply-updates|retry-failed|verify-files|deep-check|export-mapping|import-mapping|cleanup-covers> [options]\n";
     echo "All Bangumi subject scans are fixed to type=2, limit=50, images.large only.\n";
+    echo "Default sync is offline: it writes SQLite, sets deploy_status=pending_deploy, then use export-mapping/import-mapping after copying covers.\n";
+    echo "SQLite status is a deprecated compatibility summary; artifact_status, deploy_status and last_check_result carry the authoritative workflow state.\n";
 }
 
 function main(array $argv): int

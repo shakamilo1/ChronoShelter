@@ -1,0 +1,45 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'codex/-bangumi'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      BANGUMI_ACCESS_TOKEN: ''
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: fileinfo, gd, pdo_sqlite, pdo_mysql, mysqli
+          coverage: none
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python test dependencies
+        run: python -m pip install --upgrade pytest
+
+      - name: Run tests
+        run: pytest -q
+
+      - name: Lint PHP files
+        run: |
+          php -l bin/bangumi_covers.php
+          php -l includes/image.php
+          php -l includes/bangumi.php
+          php -l subject.php
+
+      - name: Compile Python helpers
+        run: python3 -m py_compile importer/image_cache.py tools/download_covers.py tools/cache_covers.py

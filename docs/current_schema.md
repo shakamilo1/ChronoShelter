@@ -74,3 +74,7 @@ These SQL files are generated for manual review/execution only. They must not be
 - `persons`: `id`, `name`, `type`, `career`, `infobox`, `summary`, `comments`, `collects`
 - `characters`: `id`, `role`, `name`, `infobox`, `summary`, `comments`, `collects`
 - relation tables: Archive relation keys are preserved (`subject_id`, `person_id`, `character_id`, `related_subject_id`, `related_person_id`, `relation_type`, `position`, `appear_eps`, `order`, `summary`, `person_type`, `spoiler`, `ended`).
+
+## Cover sync SQLite state model
+
+The offline `cover_manifest.status` column is retained as a deprecated compatibility summary for older local SQLite databases. New CLI logic separates the authoritative state into `artifact_status` (last verified local artifact availability), `deploy_status` (`deployed`, `pending_deploy`, or `mapping_failed`), and `last_check_result` (`unchanged`, `updated`, `remote_missing`, `http_failed`, `invalid_remote`, `local_invalid`, etc.). Sync, check-updates, deep-check, and verify-files must not clear `pending_deploy` or `mapping_failed`; only a successful mapping import or an explicit deployment confirmation may mark a cover as deployed.
