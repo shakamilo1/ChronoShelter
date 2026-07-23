@@ -86,3 +86,64 @@ def test_truncated_jpeg_is_rejected_by_php_validator(tmp_path):
     assert proc.returncode == 0, proc.stderr
     data = json.loads(proc.stdout)
     assert data["error"] is not None
+
+
+def test_api_rejects_userinfo_and_non_443_port_before_authorization_header():
+    php = textwrap.dedent(f"""
+    <?php
+    require {json.dumps(str(ROOT / 'bin' / 'bangumi_covers.php'))};
+    putenv('BANGUMI_ACCESS_TOKEN=fake-test-token');
+    $results = [];
+    foreach (['https://api.bgm.tv@evil.example/v0/subjects', 'https://api.bgm.tv:444/v0/subjects', 'http://api.bgm.tv/v0/subjects'] as $url) {{
+        try {{ api_request_headers($url); $results[] = 'allowed'; }} catch (Throwable $e) {{ $results[] = $e->getMessage(); }}
+    }}
+    echo json_encode($results, JSON_UNESCAPED_SLASHES);
+    ?>
+    """)
+    proc = run_php(php)
+    assert proc.returncode == 0, proc.stderr
+    results = json.loads(proc.stdout)
+    assert all("refusing to send" in item for item in results)
+    assert "fake-test-token" not in proc.stdout + proc.stderr
+
+
+def test_image_request_headers_filter_caller_supplied_authorization():
+    php = textwrap.dedent(f"""
+    <?php
+    require {json.dumps(str(ROOT / 'bin' / 'bangumi_covers.php'))};
+    putenv('BANGUMI_ACCESS_TOKEN=fake-test-token');
+    echo json_encode(image_request_headers(['Authorization: Bearer injected', 'If-Modified-Since: Wed, 01 Jan 2025 00:00:00 GMT']), JSON_UNESCAPED_SLASHES);
+    ?>
+    """)
+    proc = run_php(php)
+    assert proc.returncode == 0, proc.stderr
+    headers = json.loads(proc.stdout)
+    assert not any(h.lower().startswith('authorization:') for h in headers)
+    assert any(h.startswith('If-Modified-Since:') for h in headers)
+    assert not any('image/avif' in h for h in headers)
+
+
+def test_retry_policy_retries_429_and_not_ordinary_404():
+    php = textwrap.dedent(f"""
+    <?php
+    require {json.dumps(str(ROOT / 'bin' / 'bangumi_covers.php'))};
+    $calls = 0;
+    $slept = [];
+    $GLOBALS['cover_sync_sleep'] = function ($seconds) use (&$slept) {{ $slept[] = $seconds; }};
+    $GLOBALS['cover_sync_http_transport'] = function ($url, $headers, $timeout) use (&$calls) {{
+        $calls++;
+        if ($calls < 3) {{ return ['status' => 429, 'headers' => ['retry-after' => '1'], 'body' => '', 'final_url' => $url]; }}
+        return ['status' => 200, 'headers' => [], 'body' => '{{}}', 'final_url' => $url];
+    }};
+    http_request('https://api.bgm.tv/v0/subjects', []);
+    $firstCalls = $calls;
+    $calls = 0;
+    $GLOBALS['cover_sync_http_transport'] = function ($url, $headers, $timeout) use (&$calls) {{ $calls++; return ['status' => 404, 'headers' => [], 'body' => '', 'final_url' => $url]; }};
+    http_request('https://api.bgm.tv/v0/missing', []);
+    echo json_encode(['retry_calls' => $firstCalls, 'not_retry_calls' => $calls, 'sleeps' => count($slept)], JSON_UNESCAPED_SLASHES);
+    ?>
+    """)
+    proc = run_php(php)
+    assert proc.returncode == 0, proc.stderr
+    data = json.loads(proc.stdout)
+    assert data == {'retry_calls': 3, 'not_retry_calls': 1, 'sleeps': 2}

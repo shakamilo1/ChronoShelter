@@ -9,6 +9,8 @@ const SUBJECT_TYPE_ANIME = 2;
 const PAGE_LIMIT = 50;
 const STATUSES = ['pending', 'downloading', 'downloaded', 'unchanged', 'pending_update', 'no_cover', 'remote_missing', 'failed', 'mapping_failed', 'pending_deploy'];
 
+class RemoteMissingCover extends RuntimeException {}
+
 $root = dirname(__DIR__);
 require_once $root . '/includes/database.php';
 
@@ -119,12 +121,28 @@ function db(): PDO
         last_checked_at TEXT NULL,
         last_downloaded_at TEXT NULL,
         retry_count INTEGER NOT NULL DEFAULT 0,
-        error_message TEXT NULL
+        error_message TEXT NULL,
+        artifact_status TEXT NULL,
+        deploy_status TEXT NULL,
+        last_check_result TEXT NULL,
+        last_error TEXT NULL,
+        checked_at TEXT NULL,
+        last_success_at TEXT NULL
     )');
-    try {
-        $pdo->exec('ALTER TABLE cover_manifest ADD COLUMN remote_filename TEXT NULL');
-    } catch (Throwable) {
-        // Column already exists.
+    foreach ([
+        'remote_filename TEXT NULL',
+        'artifact_status TEXT NULL',
+        'deploy_status TEXT NULL',
+        'last_check_result TEXT NULL',
+        'last_error TEXT NULL',
+        'checked_at TEXT NULL',
+        'last_success_at TEXT NULL',
+    ] as $columnSql) {
+        try {
+            $pdo->exec('ALTER TABLE cover_manifest ADD COLUMN ' . $columnSql);
+        } catch (Throwable) {
+            // Column already exists.
+        }
     }
     $pdo->exec('CREATE TABLE IF NOT EXISTS sync_runs (
         run_id TEXT PRIMARY KEY,
@@ -193,7 +211,10 @@ function api_request_headers(string $url): array
 {
     $scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
     $host = normalized_url_host($url);
-    if ($scheme !== 'https' || $host !== 'api.bgm.tv') {
+    $user = parse_url($url, PHP_URL_USER);
+    $pass = parse_url($url, PHP_URL_PASS);
+    $port = parse_url($url, PHP_URL_PORT);
+    if ($scheme !== 'https' || $host !== 'api.bgm.tv' || $user !== null || $pass !== null || ($port !== null && (int) $port !== 443)) {
         throw new RuntimeException('refusing to send Bangumi API request outside https://api.bgm.tv');
     }
     $headers = ['User-Agent: ' . BANGUMI_COVER_USER_AGENT, 'Accept: application/json'];
@@ -206,10 +227,26 @@ function api_request_headers(string $url): array
 
 function image_request_headers(array $conditionalHeaders = []): array
 {
+    $safeConditional = [];
+    foreach ($conditionalHeaders as $header) {
+        if (!is_string($header) || preg_match('/^\s*Authorization\s*:/i', $header)) {
+            continue;
+        }
+        $safeConditional[] = $header;
+    }
     return array_merge([
         'User-Agent: ' . BANGUMI_COVER_USER_AGENT,
         'Accept: image/webp,image/png,image/jpeg,*/*;q=0.8',
-    ], $conditionalHeaders);
+    ], $safeConditional);
+}
+
+function cover_sync_sleep(float $seconds): void
+{
+    if (isset($GLOBALS['cover_sync_sleep']) && is_callable($GLOBALS['cover_sync_sleep'])) {
+        ($GLOBALS['cover_sync_sleep'])($seconds);
+        return;
+    }
+    usleep((int) max(0, $seconds * 1000000));
 }
 
 function http_request_once(string $url, array $headers, int $timeout = 30): array
@@ -256,7 +293,7 @@ function http_request(string $url, array $headers, int $timeout = 30, int $maxRe
         $responseHeaders = $response['headers'] ?? [];
         $retryAfter = isset($responseHeaders['retry-after']) ? (int) $responseHeaders['retry-after'] : 0;
         $sleep = $retryAfter > 0 ? $retryAfter : min(30, 2 ** $attempt) + random_int(0, 1000) / 1000;
-        usleep((int) ($sleep * 1000000));
+        cover_sync_sleep(min(30.0, (float) $sleep));
     }
 }
 
@@ -490,7 +527,7 @@ function download_image_to_tmp(int $subjectId, string $url, array $conditionalHe
     $finalUrl = $response['final_url'] ?? $url;
     $finalPath = parse_url($finalUrl, PHP_URL_PATH);
     if (is_string($finalPath) && basename($finalPath) === 'no_icon_subject.png') {
-        throw new RuntimeException('Bangumi no-icon placeholder rejected');
+        throw new RemoteMissingCover('Bangumi no-icon placeholder rejected');
     }
     if (file_put_contents($tmp, (string) $response['body'], LOCK_EX) === false) {
         throw new RuntimeException('cannot write temp image');
@@ -622,6 +659,7 @@ function apply_one(int $subjectId, bool $dryRun = false): bool
             $existingSha = hash_file('sha256', $target);
             if ($existingSha === $meta['sha256']) {
                 @unlink($meta['tmp_path']);
+                $ownedTmp = null;
             } else {
                 $localFilename = versioned_cover_filename($remoteFilename, $meta['sha256'], 12);
                 $relative = cover_relative_path($subjectId, $localFilename);
@@ -630,6 +668,7 @@ function apply_one(int $subjectId, bool $dryRun = false): bool
                     $versionedSha = hash_file('sha256', $target);
                     if ($versionedSha === $meta['sha256']) {
                         @unlink($meta['tmp_path']);
+                        $ownedTmp = null;
                     } else {
                         $localFilename = versioned_cover_filename($remoteFilename, $meta['sha256'], 64);
                         $relative = cover_relative_path($subjectId, $localFilename);
@@ -644,11 +683,12 @@ function apply_one(int $subjectId, bool $dryRun = false): bool
                 throw new RuntimeException('cannot create cover directory');
             }
             move_no_clobber($meta['tmp_path'], $target);
+            $ownedTmp = null;
         }
         $stmt = db()->prepare('UPDATE cover_manifest SET downloaded_url = observed_url, remote_filename = :remote_filename, relative_path = :path, mime_type = :mime,
             file_extension = :ext, file_size = :size, sha256 = :sha, etag = :etag, last_modified = :lm,
-            last_downloaded_at = :downloaded, last_checked_at = :checked, status = :status, error_message = NULL WHERE subject_id = :id');
-        $stmt->execute(['status' => ((bool) $GLOBALS['cover_sync_options']['write-mysql'] ? 'downloaded' : 'pending_deploy'), 'remote_filename' => $remoteFilename, 'path' => $relative, 'mime' => $meta['mime_type'], 'ext' => $meta['extension'], 'size' => $meta['file_size'], 'sha' => $meta['sha256'], 'etag' => $meta['etag'], 'lm' => $meta['last_modified'], 'downloaded' => now_utc(), 'checked' => now_utc(), 'id' => $subjectId]);
+            last_downloaded_at = :downloaded, last_checked_at = :checked, status = :status, artifact_status = \'available\', deploy_status = :deploy_status, last_check_result = \'downloaded\', last_success_at = :downloaded, error_message = NULL WHERE subject_id = :id');
+        $stmt->execute(['status' => ((bool) $GLOBALS['cover_sync_options']['write-mysql'] ? 'downloaded' : 'pending_deploy'), 'deploy_status' => ((bool) $GLOBALS['cover_sync_options']['write-mysql'] ? 'deployed' : 'pending_deploy'), 'remote_filename' => $remoteFilename, 'path' => $relative, 'mime' => $meta['mime_type'], 'ext' => $meta['extension'], 'size' => $meta['file_size'], 'sha' => $meta['sha256'], 'etag' => $meta['etag'], 'lm' => $meta['last_modified'], 'downloaded' => now_utc(), 'checked' => now_utc(), 'id' => $subjectId]);
         if ((bool) $GLOBALS['cover_sync_options']['write-mysql']) {
             try {
                 sync_mysql_cover_cache($subjectId, 'cached', $remoteFilename, (string) $row['observed_url'], $relative, null, $meta);
@@ -662,11 +702,20 @@ function apply_one(int $subjectId, bool $dryRun = false): bool
         }
         // Keep previous cover files until an explicit cleanup-covers --apply run.
         return true;
+    } catch (RemoteMissingCover $exc) {
+        $status = !empty($row['relative_path']) ? 'remote_missing' : 'no_cover';
+        db()->prepare('UPDATE cover_manifest SET status = :status, last_check_result = :result, last_error = :error, last_checked_at = :checked WHERE subject_id = :id')
+            ->execute(['status' => $status, 'result' => 'remote_missing', 'error' => mb_substr($exc->getMessage(), 0, 1000), 'checked' => now_utc(), 'id' => $subjectId]);
+        return false;
     } catch (Throwable $exc) {
         mark_failed($subjectId, $exc->getMessage());
         // cover_cache represents the website's last safe display mapping; never write
         // transient download failures to MariaDB or disable a previous cached cover.
         return false;
+    } finally {
+        if (is_string($ownedTmp) && is_file($ownedTmp)) {
+            @unlink($ownedTmp);
+        }
     }
 }
 
@@ -763,7 +812,7 @@ function scan_pages(string $mode, array $options): array
             if ($mode === 'sync' && in_array($status, ['pending', 'pending_update'], true)) {
                 if (apply_one($id, (bool) $options['dry-run'])) $stats['new_downloads']++;
                 else $stats['update_failed']++;
-                usleep((int) (((float) $options['download-delay']) * 1000000));
+                cover_sync_sleep((float) $options['download-delay']);
             }
             if (in_array($status, ['pending', 'pending_update', 'remote_missing'], true)) {
                 $after = manifest_row($id);
@@ -775,7 +824,7 @@ function scan_pages(string $mode, array $options): array
         }
         $stats['api_pages']++;
         update_run($run['run_id'], $offset, $total, 'running');
-        usleep((int) (((float) $options['api-delay']) * 1000000));
+        cover_sync_sleep((float) $options['api-delay']);
     }
     $complete = $total !== null && $offset >= $total && ($options['max-pages'] === null) && ($options['max-items'] === null);
     update_run($run['run_id'], $offset, $total, $complete ? 'completed' : 'running');
@@ -808,7 +857,7 @@ function apply_updates(array $options): array
     $limit = $options['max-items'] !== null ? (int) $options['max-items'] : count($rows);
     foreach (array_slice($rows, 0, $limit) as $id) {
         if (apply_one((int) $id, (bool) $options['dry-run'])) $stats['update_success']++; else $stats['update_failed']++;
-        usleep((int) (((float) $options['download-delay']) * 1000000));
+        cover_sync_sleep((float) $options['download-delay']);
     }
     $stats['complete'] = count($rows) <= $limit;
     $stats['manifest_records'] = (int) db()->query('SELECT COUNT(*) FROM cover_manifest')->fetchColumn();
@@ -821,14 +870,36 @@ function retry_failed(array $options): array
     return apply_updates($options);
 }
 
+
+function strict_manifest_cover_ok(array $row, ?string &$error = null): bool
+{
+    $relativePath = $row['relative_path'] ?? null;
+    if (!is_string($relativePath) || $relativePath === '') { $error = 'missing relative_path'; return false; }
+    try { $path = cover_absolute_path($relativePath); } catch (Throwable $exc) { $error = $exc->getMessage(); return false; }
+    $root = realpath(cover_sync_paths()['covers']);
+    $real = realpath($path);
+    if ($root === false || $real === false || !str_starts_with($real, rtrim($root, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR)) { $error = 'cover path outside covers'; return false; }
+    if (!is_file($path)) { $error = 'cover file missing'; return false; }
+    if (!isset($row['file_size']) || (int) $row['file_size'] !== filesize($path)) { $error = 'file size mismatch'; return false; }
+    if (empty($row['sha256']) || !preg_match('/^[a-f0-9]{64}$/i', (string) $row['sha256']) || hash_file('sha256', $path) !== strtolower((string) $row['sha256'])) { $error = 'sha256 mismatch'; return false; }
+    if (empty($row['mime_type'])) { $error = 'missing mime_type'; return false; }
+    try { $meta = validate_image_file($path, (string) $row['mime_type']); } catch (Throwable $exc) { $error = $exc->getMessage(); return false; }
+    $ext = strtolower(pathinfo($relativePath, PATHINFO_EXTENSION));
+    if ($ext === 'jpeg') $ext = 'jpg';
+    if (!empty($row['file_extension']) && strtolower((string) $row['file_extension']) !== $meta['extension']) { $error = 'file extension mismatch'; return false; }
+    if ($ext !== $meta['extension']) { $error = 'path extension mismatch'; return false; }
+    return true;
+}
+
 function verify_files(array $options): array
 {
     $stats = stats_template('verify-files');
     $rows = db()->query("SELECT subject_id, relative_path, mime_type, file_extension, file_size, sha256 FROM cover_manifest WHERE subject_type = 2 AND relative_path IS NOT NULL")->fetchAll(PDO::FETCH_ASSOC);
     foreach ($rows as $row) {
         $stats['scanned_anime']++;
-        if (!local_cover_ok($row['relative_path'], $row)) {
-            db()->prepare("UPDATE cover_manifest SET status = 'pending_update', error_message = 'local file missing or invalid' WHERE subject_id = :id")->execute(['id' => $row['subject_id']]);
+        $error = null;
+        if (!strict_manifest_cover_ok($row, $error)) {
+            db()->prepare("UPDATE cover_manifest SET status = 'pending_update', error_message = :error WHERE subject_id = :id")->execute(['error' => 'local file invalid: ' . $error, 'id' => $row['subject_id']]);
             $stats['url_changes']++;
         } else {
             $stats['existing_skipped']++;
@@ -870,10 +941,13 @@ function deep_check(array $options): array
                 continue;
             }
             if (($meta['sha256'] ?? '') !== ($row['sha256'] ?? '')) {
-                db()->prepare("UPDATE cover_manifest SET status = 'pending_update', error_message = 'deep-check sha256 changed', last_checked_at = :checked WHERE subject_id = :id")->execute(['checked' => now_utc(), 'id' => $row['subject_id']]);
+                if (isset($meta['tmp_path']) && is_file($meta['tmp_path'])) { @unlink($meta['tmp_path']); }
+                $nextStatus = in_array(($row['status'] ?? ''), ['pending_deploy', 'mapping_failed'], true) ? (string) $row['status'] : 'pending_update';
+                db()->prepare('UPDATE cover_manifest SET status = :status, last_check_result = :result, error_message = :error, last_checked_at = :checked WHERE subject_id = :id')->execute(['status' => $nextStatus, 'result' => 'updated', 'error' => 'deep-check sha256 changed', 'checked' => now_utc(), 'id' => $row['subject_id']]);
                 $stats['deep_changes']++;
             } else {
                 @unlink($meta['tmp_path']);
+                $ownedTmp = null;
                 $nextStatus = in_array(($row['status'] ?? ''), ['pending_deploy', 'mapping_failed'], true) ? (string) $row['status'] : 'unchanged';
                 db()->prepare('UPDATE cover_manifest SET status = :status, last_checked_at = :checked WHERE subject_id = :id')->execute(['status' => $nextStatus, 'checked' => now_utc(), 'id' => $row['subject_id']]);
                 $stats['existing_skipped']++;
@@ -888,7 +962,7 @@ function deep_check(array $options): array
             }
             $stats['update_failed']++;
         }
-        usleep((int) (((float) $options['download-delay']) * 1000000));
+        cover_sync_sleep((float) $options['download-delay']);
     }
     $stats['complete'] = true;
     $stats['manifest_records'] = (int) db()->query('SELECT COUNT(*) FROM cover_manifest')->fetchColumn();

@@ -83,7 +83,7 @@ var/cover-sync/
 └── reports/
 ```
 
-临时下载文件写入 `var/cover-sync/tmp/`，不会写入公开的 `covers/`。SQLite 记录 `subject_id`、固定的 `subject_type=2`、`downloaded_url`、`observed_url`、`relative_path`、`mime_type`、`file_extension`、`file_size`、`sha256`、`etag`、`last_modified`、状态、时间戳、重试次数和错误信息。同步进度记录 `run_id`、`run_type`、`next_offset`、`total`、开始/更新时间、完成时间和运行状态。
+临时下载文件写入 `var/cover-sync/tmp/`，不会写入公开的 `covers/`。SQLite 记录 `subject_id`、固定的 `subject_type=2`、`downloaded_url`、`observed_url`、`relative_path`、`mime_type`、`file_extension`、`file_size`、`sha256`、`etag`、`last_modified`、状态、时间戳、重试次数和错误信息；同时预留并幂等迁移 `artifact_status`、`deploy_status`、`last_check_result`、`last_error`、`checked_at`、`last_success_at`，用于区分最后成功文件、部署状态和本次远端检查结果。同步进度记录 `run_id`、`run_type`、`next_offset`、`total`、开始/更新时间、完成时间和运行状态。
 
 ## 命令
 
