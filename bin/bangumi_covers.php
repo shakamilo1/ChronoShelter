@@ -735,8 +735,8 @@ function apply_one(int $subjectId, bool $dryRun = false): bool
         $relative = $stored['relative_path'];
         $stmt = db()->prepare('UPDATE cover_manifest SET downloaded_url = observed_url, remote_filename = :remote_filename, relative_path = :path, mime_type = :mime,
             file_extension = :ext, file_size = :size, sha256 = :sha, etag = :etag, last_modified = :lm,
-            last_downloaded_at = :downloaded, last_checked_at = :checked, checked_at = :checked, status = :status, artifact_status = \'available\', deploy_status = :deploy_status, last_check_result = \'updated\', last_success_at = :downloaded, error_message = NULL, last_error = NULL WHERE subject_id = :id');
-        $stmt->execute(['status' => ((bool) $GLOBALS['cover_sync_options']['write-mysql'] ? 'downloaded' : 'pending_deploy'), 'deploy_status' => ((bool) $GLOBALS['cover_sync_options']['write-mysql'] ? 'deployed' : 'pending_deploy'), 'remote_filename' => $remoteFilename, 'path' => $relative, 'mime' => $meta['mime_type'], 'ext' => $meta['extension'], 'size' => $meta['file_size'], 'sha' => $meta['sha256'], 'etag' => $meta['etag'], 'lm' => $meta['last_modified'], 'downloaded' => now_utc(), 'checked' => now_utc(), 'id' => $subjectId]);
+            last_downloaded_at = :downloaded, last_checked_at = :checked, checked_at = :checked, status = \'pending_deploy\', artifact_status = \'available\', deploy_status = \'pending_deploy\', last_check_result = \'updated\', last_success_at = :downloaded, error_message = NULL, last_error = NULL WHERE subject_id = :id');
+        $stmt->execute(['remote_filename' => $remoteFilename, 'path' => $relative, 'mime' => $meta['mime_type'], 'ext' => $meta['extension'], 'size' => $meta['file_size'], 'sha' => $meta['sha256'], 'etag' => $meta['etag'], 'lm' => $meta['last_modified'], 'downloaded' => now_utc(), 'checked' => now_utc(), 'id' => $subjectId]);
         if ((bool) $GLOBALS['cover_sync_options']['write-mysql']) {
             try {
                 sync_mysql_cover_cache($subjectId, 'cached', $remoteFilename, (string) $row['observed_url'], $relative, null, $meta);
@@ -771,9 +771,17 @@ function apply_one(int $subjectId, bool $dryRun = false): bool
     }
 }
 
+function cover_sync_library_db(): mixed
+{
+    if (isset($GLOBALS['cover_sync_library_db'])) {
+        return $GLOBALS['cover_sync_library_db'];
+    }
+    return db_library();
+}
+
 function sync_mysql_cover_cache(int $subjectId, string $status, ?string $remoteFilename, ?string $sourceUrl, ?string $relativePath, ?string $error, array $meta): void
 {
-    $pdo = db_library();
+    $pdo = cover_sync_library_db();
     $stmt = $pdo->prepare('INSERT INTO cover_cache (subject_id, status, remote_filename, source_url, local_path, error, content_type, file_size, sha256)
         VALUES (:id, :status, :remote_filename, :source_url, :path, :error, :content_type, :file_size, :sha256)
         ON DUPLICATE KEY UPDATE status = VALUES(status), remote_filename = VALUES(remote_filename), source_url = VALUES(source_url),
@@ -1199,7 +1207,7 @@ function import_mapping(array $options): array
     }
     fclose($handle);
 
-    $pdo = db_library();
+    $pdo = cover_sync_library_db();
     $pdo->beginTransaction();
     try {
         $stmt = $pdo->prepare('INSERT INTO cover_cache (subject_id, status, remote_filename, source_url, local_path, content_type, file_size, sha256, updated_at)
@@ -1213,16 +1221,30 @@ function import_mapping(array $options): array
                 sha256 = IF(VALUES(status) = \'no_cover\' AND status = \'cached\', sha256, VALUES(sha256)), updated_at = VALUES(updated_at)');
         foreach ($rows as $row) {
             $stmt->execute($row);
-            if ($row['status'] === 'cached') {
-                db()->prepare("UPDATE cover_manifest SET deploy_status = 'deployed', status = 'downloaded', last_check_result = COALESCE(last_check_result, 'unchanged'), last_checked_at = :checked, checked_at = :checked WHERE subject_id = :id")
-                    ->execute(['checked' => now_utc(), 'id' => $row['subject_id']]);
-            }
             $stats['update_success']++;
         }
         $pdo->commit();
     } catch (Throwable $exc) {
         $pdo->rollBack();
         throw $exc;
+    }
+    try {
+        if (isset($GLOBALS['cover_sync_after_mysql_mapping_commit']) && is_callable($GLOBALS['cover_sync_after_mysql_mapping_commit'])) {
+            ($GLOBALS['cover_sync_after_mysql_mapping_commit'])();
+        }
+        db()->beginTransaction();
+        $manifestStmt = db()->prepare("UPDATE cover_manifest SET deploy_status = 'deployed', status = 'downloaded', last_check_result = COALESCE(last_check_result, 'unchanged'), last_checked_at = :checked, checked_at = :checked WHERE subject_id = :id AND subject_type = 2");
+        foreach ($rows as $row) {
+            if ($row['status'] === 'cached') {
+                $manifestStmt->execute(['checked' => now_utc(), 'id' => $row['subject_id']]);
+            }
+        }
+        db()->commit();
+    } catch (Throwable $exc) {
+        if (db()->inTransaction()) {
+            db()->rollBack();
+        }
+        throw new RuntimeException('MariaDB mapping committed, but local SQLite deploy_status update failed: ' . $exc->getMessage(), 0, $exc);
     }
     $stats['complete'] = true;
     return $stats;

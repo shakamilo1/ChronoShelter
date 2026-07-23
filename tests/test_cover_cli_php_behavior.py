@@ -312,3 +312,203 @@ def test_check_updates_resume_cursor_and_empty_page_failure(tmp_path):
     assert data["second"] == 50
     assert data["run"] == 50
     assert "empty data" in data["empty_error"]
+
+
+def test_apply_one_write_mysql_marks_deployed_only_after_mapping_success(tmp_path):
+    state = tmp_path / "state"
+    covers = tmp_path / "covers"
+    php = textwrap.dedent(f"""
+    <?php
+    error_reporting(E_ALL);
+    set_error_handler(static function($severity, $message, $file, $line) {{
+        throw new ErrorException($message, 0, $severity, $file, $line);
+    }});
+    require {json.dumps(str(ROOT / 'bin' / 'bangumi_covers.php'))};
+    final class FakeStatement {{
+        public function __construct(private FakeLibraryDb $db) {{}}
+        public function execute($params = null): bool {{
+            $this->db->executeCalls++;
+            $this->db->seenDeployBeforeExecute[] = manifest_row(6001)['deploy_status'] ?? null;
+            if ($this->db->failExecute) {{ throw new RuntimeException('fake mysql write failed'); }}
+            return true;
+        }}
+    }}
+    final class FakeLibraryDb {{
+        public int $prepareCalls = 0;
+        public int $executeCalls = 0;
+        public bool $failExecute = false;
+        public array $seenDeployBeforeExecute = [];
+        public function prepare(string $sql): FakeStatement {{ $this->prepareCalls++; return new FakeStatement($this); }}
+    }}
+    ensure_runtime_dirs();
+    $GLOBALS['cover_sync_sleep'] = static function($seconds) {{}};
+    $im = imagecreatetruecolor(1, 1);
+    ob_start(); imagepng($im); $png = ob_get_clean();
+    $GLOBALS['cover_sync_http_transport'] = static function($url, $headers, $timeout) use ($png) {{
+        return ['status' => 200, 'headers' => ['content-type' => 'image/png'], 'body' => $png, 'final_url' => $url];
+    }};
+    $tmpDir = cover_sync_paths()['tmp'];
+    $tmpFiles = static fn() => array_values(array_map('basename', glob($tmpDir . '/*') ?: []));
+
+    db()->prepare("INSERT INTO cover_manifest (subject_id, subject_type, observed_url, artifact_status, deploy_status, status) VALUES (6001, 2, 'https://lain.bgm.tv/pic/cover/l/a/b/6001_ok.png', 'missing', 'pending_deploy', 'pending')")->execute();
+    $fake = new FakeLibraryDb();
+    $GLOBALS['cover_sync_library_db'] = $fake;
+    $GLOBALS['cover_sync_options'] = ['write-mysql' => true];
+    $ok = apply_one(6001);
+    $afterSuccess = manifest_row(6001);
+
+    db()->prepare("INSERT INTO cover_manifest (subject_id, subject_type, observed_url, artifact_status, deploy_status, status) VALUES (6002, 2, 'https://lain.bgm.tv/pic/cover/l/a/b/6002_ok.png', 'missing', 'pending_deploy', 'pending')")->execute();
+    $GLOBALS['cover_sync_http_transport'] = static function($url, $headers, $timeout) use ($png) {{
+        return ['status' => 200, 'headers' => ['content-type' => 'image/png'], 'body' => $png, 'final_url' => $url];
+    }};
+    $fakeFail = new FakeLibraryDb();
+    $fakeFail->failExecute = true;
+    $GLOBALS['cover_sync_library_db'] = $fakeFail;
+    $fail = apply_one(6002);
+    $afterFail = manifest_row(6002);
+
+    db()->prepare("INSERT INTO cover_manifest (subject_id, subject_type, observed_url, artifact_status, deploy_status, status) VALUES (6003, 2, 'https://lain.bgm.tv/pic/cover/l/a/b/6003_ok.png', 'missing', 'pending_deploy', 'pending')")->execute();
+    $GLOBALS['cover_sync_options'] = ['write-mysql' => false];
+    unset($GLOBALS['cover_sync_library_db']);
+    $offline = apply_one(6003);
+    $afterOffline = manifest_row(6003);
+
+    echo json_encode([
+        'ok' => $ok,
+        'success_deploy' => $afterSuccess['deploy_status'],
+        'seen_before_mysql' => $fake->seenDeployBeforeExecute,
+        'fail' => $fail,
+        'fail_deploy' => $afterFail['deploy_status'],
+        'fail_file_exists' => is_file(cover_absolute_path($afterFail['relative_path'])),
+        'offline' => $offline,
+        'offline_deploy' => $afterOffline['deploy_status'],
+        'offline_prepare_calls' => $fake->prepareCalls + $fakeFail->prepareCalls,
+        'tmp' => $tmpFiles(),
+    ], JSON_UNESCAPED_SLASHES);
+    ?>
+    """)
+    proc = run_php(php, {
+        "CHRONOSHELTER_COVER_SYNC_STATE_DIR": str(state),
+        "CHRONOSHELTER_COVERS_DIR": str(covers),
+    })
+    assert proc.returncode == 0, proc.stderr
+    data = json.loads(proc.stdout)
+    assert data["ok"] is True
+    assert data["seen_before_mysql"] == ["pending_deploy"]
+    assert data["success_deploy"] == "deployed"
+    assert data["fail"] is False
+    assert data["fail_deploy"] == "mapping_failed"
+    assert data["fail_file_exists"] is True
+    assert data["offline"] is True
+    assert data["offline_deploy"] == "pending_deploy"
+    assert data["offline_prepare_calls"] == 2
+    assert data["tmp"] == []
+
+
+def test_import_mapping_updates_sqlite_only_after_mysql_commit_and_rolls_back_on_failure(tmp_path):
+    state = tmp_path / "state"
+    covers = tmp_path / "covers"
+    mapping = tmp_path / "mapping.jsonl"
+    php = textwrap.dedent(f"""
+    <?php
+    error_reporting(E_ALL);
+    set_error_handler(static function($severity, $message, $file, $line) {{
+        throw new ErrorException($message, 0, $severity, $file, $line);
+    }});
+    require {json.dumps(str(ROOT / 'bin' / 'bangumi_covers.php'))};
+    final class ImportFakeStatement {{
+        public function __construct(private ImportFakeDb $db) {{}}
+        public function execute($params = null): bool {{
+            $this->db->executeCalls++;
+            if ($this->db->failOnExecute > 0 && $this->db->executeCalls === $this->db->failOnExecute) {{ throw new RuntimeException('fake import write failed'); }}
+            return true;
+        }}
+    }}
+    final class ImportFakeDb {{
+        public int $executeCalls = 0;
+        public int $beginCalls = 0;
+        public int $commitCalls = 0;
+        public int $rollbackCalls = 0;
+        public int $failOnExecute = 0;
+        public function beginTransaction(): bool {{ $this->beginCalls++; return true; }}
+        public function commit(): bool {{ $this->commitCalls++; return true; }}
+        public function rollBack(): bool {{ $this->rollbackCalls++; return true; }}
+        public function prepare(string $sql): ImportFakeStatement {{ return new ImportFakeStatement($this); }}
+    }}
+    ensure_runtime_dirs();
+    $im = imagecreatetruecolor(1, 1);
+    ob_start(); imagepng($im); $png = ob_get_clean();
+    $makeRow = static function(int $id) use ($png) {{
+        $name = $id . '_ok.png';
+        $relative = cover_relative_path($id, $name);
+        $absolute = cover_absolute_path($relative);
+        if (!is_dir(dirname($absolute))) {{ mkdir(dirname($absolute), 0775, true); }}
+        file_put_contents($absolute, $png);
+        $meta = validate_image_file($absolute, 'image/png');
+        db()->prepare("INSERT INTO cover_manifest (subject_id, subject_type, relative_path, remote_filename, mime_type, file_extension, file_size, sha256, artifact_status, deploy_status, status) VALUES (:id, 2, :path, :remote, :mime, :ext, :size, :sha, 'available', 'pending_deploy', 'pending_deploy')")
+            ->execute(['id' => $id, 'path' => $relative, 'remote' => $name, 'mime' => $meta['mime_type'], 'ext' => $meta['extension'], 'size' => $meta['file_size'], 'sha' => $meta['sha256']]);
+        return ['subject_id' => $id, 'status' => 'cached', 'remote_filename' => $name, 'source_url' => 'https://lain.bgm.tv/pic/cover/l/a/b/' . $name, 'local_path' => $relative, 'content_type' => $meta['mime_type'], 'file_size' => $meta['file_size'], 'sha256' => $meta['sha256'], 'updated_at' => '2026-07-23 00:00:00'];
+    }};
+    $row1 = $makeRow(7001);
+    $row2 = $makeRow(7002);
+
+    file_put_contents({json.dumps(str(mapping))}, json_encode($row1, JSON_UNESCAPED_SLASHES) . "\n" . json_encode($row2, JSON_UNESCAPED_SLASHES) . "\n");
+    $fakeFail = new ImportFakeDb();
+    $fakeFail->failOnExecute = 2;
+    $GLOBALS['cover_sync_library_db'] = $fakeFail;
+    $failError = null;
+    try {{ import_mapping(['file' => {json.dumps(str(mapping))}]); }} catch (Throwable $e) {{ $failError = $e->getMessage(); }}
+    $afterFail1 = manifest_row(7001)['deploy_status'];
+    $afterFail2 = manifest_row(7002)['deploy_status'];
+
+    $fakeOk = new ImportFakeDb();
+    $GLOBALS['cover_sync_library_db'] = $fakeOk;
+    $okStats = import_mapping(['file' => {json.dumps(str(mapping))}]);
+    $afterOk1 = manifest_row(7001)['deploy_status'];
+    $afterOk2 = manifest_row(7002)['deploy_status'];
+
+    $badNoCover = {json.dumps(str(tmp_path / 'bad_no_cover.jsonl'))};
+    file_put_contents($badNoCover, json_encode(['subject_id' => 8001, 'status' => 'no_cover', 'local_path' => 'subjects/000/008/8001_bad.png'], JSON_UNESCAPED_SLASHES) . "\n");
+    $fakePrecheck = new ImportFakeDb();
+    $GLOBALS['cover_sync_library_db'] = $fakePrecheck;
+    $precheckError = null;
+    try {{ import_mapping(['file' => $badNoCover]); }} catch (Throwable $e) {{ $precheckError = $e->getMessage(); }}
+
+    $fakeSqliteFail = new ImportFakeDb();
+    $GLOBALS['cover_sync_library_db'] = $fakeSqliteFail;
+    $GLOBALS['cover_sync_after_mysql_mapping_commit'] = static function() {{ throw new RuntimeException('fake sqlite deploy update failed'); }};
+    $sqliteError = null;
+    try {{ import_mapping(['file' => {json.dumps(str(mapping))}]); }} catch (Throwable $e) {{ $sqliteError = $e->getMessage(); }}
+
+    echo json_encode([
+        'fail_error' => $failError,
+        'fail_rollback' => $fakeFail->rollbackCalls,
+        'fail_commit' => $fakeFail->commitCalls,
+        'after_fail' => [$afterFail1, $afterFail2],
+        'ok_commits' => $fakeOk->commitCalls,
+        'ok_stats' => $okStats['update_success'],
+        'after_ok' => [$afterOk1, $afterOk2],
+        'precheck_error' => $precheckError,
+        'precheck_execute_calls' => $fakePrecheck->executeCalls,
+        'sqlite_error' => $sqliteError,
+        'sqlite_mysql_commits' => $fakeSqliteFail->commitCalls,
+    ], JSON_UNESCAPED_SLASHES);
+    ?>
+    """)
+    proc = run_php(php, {
+        "CHRONOSHELTER_COVER_SYNC_STATE_DIR": str(state),
+        "CHRONOSHELTER_COVERS_DIR": str(covers),
+    })
+    assert proc.returncode == 0, proc.stderr
+    data = json.loads(proc.stdout)
+    assert "fake import write failed" in data["fail_error"]
+    assert data["fail_rollback"] == 1
+    assert data["fail_commit"] == 0
+    assert data["after_fail"] == ["pending_deploy", "pending_deploy"]
+    assert data["ok_commits"] == 1
+    assert data["ok_stats"] == 2
+    assert data["after_ok"] == ["deployed", "deployed"]
+    assert "no_cover mapping must not include file fields" in data["precheck_error"]
+    assert data["precheck_execute_calls"] == 0
+    assert "MariaDB mapping committed, but local SQLite deploy_status update failed" in data["sqlite_error"]
+    assert data["sqlite_mysql_commits"] == 1
