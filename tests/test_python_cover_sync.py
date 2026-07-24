@@ -111,7 +111,7 @@ def test_python_sync_rejects_no_icon_and_exports_mapping(monkeypatch, tmp_path):
     covers, state = configure_paths(monkeypatch, tmp_path)
     body = png_bytes()
 
-    def fake_request(url, headers, proxy, timeout):
+    def fake_request(url, headers, proxy, timeout, *args, **kwargs):
         if url.startswith(dl.API_URL):
             page = {"total": 2, "limit": 50, "offset": 0, "data": [
                 {"id": 491569, "type": 2, "images": {"large": "https://lain.bgm.tv/pic/cover/l/a/b/491569_ok.png"}},
@@ -120,7 +120,7 @@ def test_python_sync_rejects_no_icon_and_exports_mapping(monkeypatch, tmp_path):
             return 200, {"content-type": "application/json"}, json.dumps(page).encode()
         raise AssertionError("unexpected request")
 
-    def fake_stream(url, headers, proxy, timeout, tmp, max_bytes=dl.MAX_IMAGE_BYTES):
+    def fake_stream(url, headers, proxy, timeout, tmp, max_bytes=dl.MAX_IMAGE_BYTES, **kwargs):
         assert "Authorization" not in headers
         tmp.write_bytes(body)
         return 200, {"content-type": "image/png"}, len(body)
@@ -144,7 +144,7 @@ def test_python_sync_rejects_no_icon_and_exports_mapping(monkeypatch, tmp_path):
 def test_python_redirect_rejects_https_downgrade_and_token_never_sent(monkeypatch, tmp_path):
     configure_paths(monkeypatch, tmp_path)
     seen_headers = []
-    def fake_stream(url, headers, proxy, timeout, tmp, max_bytes=dl.MAX_IMAGE_BYTES):
+    def fake_stream(url, headers, proxy, timeout, tmp, max_bytes=dl.MAX_IMAGE_BYTES, **kwargs):
         seen_headers.append(headers)
         return 302, {"location": "http://evil.example/491569_ok.png"}, 0
     monkeypatch.setattr(dl, "stream_once_to_tmp", fake_stream)
@@ -161,7 +161,7 @@ def test_python_redirect_rejects_https_downgrade_and_token_never_sent(monkeypatc
 def test_python_download_validation_failure_cleans_part(monkeypatch, tmp_path):
     configure_paths(monkeypatch, tmp_path)
     monkeypatch.setattr(dl, "Image", None)
-    def fake_stream(url, headers, proxy, timeout, tmp, max_bytes=dl.MAX_IMAGE_BYTES):
+    def fake_stream(url, headers, proxy, timeout, tmp, max_bytes=dl.MAX_IMAGE_BYTES, **kwargs):
         tmp.write_bytes(png_bytes())
         return 200, {"content-type": "image/png"}, tmp.stat().st_size
     monkeypatch.setattr(dl, "stream_once_to_tmp", fake_stream)
@@ -188,10 +188,10 @@ def test_python_invalid_file_redownloads_and_export_skips_invalid(monkeypatch, t
     assert dl.export_mapping(dl.build_parser().parse_args(["export-mapping", f"--file={out}"])) == 0
     assert out.read_text() == ""
 
-    def fake_request(url, headers, proxy, timeout):
+    def fake_request(url, headers, proxy, timeout, *args, **kwargs):
         page = {"total": 1, "limit": 50, "offset": 0, "data": [{"id": 491569, "type": 2, "images": {"large": "https://lain.bgm.tv/pic/cover/l/a/b/491569_ok.png"}}]}
         return 200, {"content-type": "application/json"}, json.dumps(page).encode()
-    def fake_stream(url, headers, proxy, timeout, tmp, max_bytes=dl.MAX_IMAGE_BYTES):
+    def fake_stream(url, headers, proxy, timeout, tmp, max_bytes=dl.MAX_IMAGE_BYTES, **kwargs):
         tmp.write_bytes(body)
         return 200, {"content-type": "image/png"}, len(body)
     monkeypatch.setattr(dl, "request_once", fake_request)
@@ -218,14 +218,24 @@ def test_python_old_php_sqlite_schema_is_rejected(monkeypatch, tmp_path):
     db.parent.mkdir(parents=True, exist_ok=True)
     import sqlite3
     con = sqlite3.connect(db)
-    con.execute("CREATE TABLE cover_manifest (subject_id INTEGER PRIMARY KEY, status TEXT)")
+    con.execute("""CREATE TABLE cover_manifest (
+        subject_id INTEGER PRIMARY KEY, subject_type INTEGER NOT NULL DEFAULT 2,
+        downloaded_url TEXT, observed_url TEXT, remote_filename TEXT, relative_path TEXT,
+        mime_type TEXT, file_extension TEXT, file_size INTEGER, sha256 TEXT, etag TEXT,
+        last_modified TEXT, artifact_status TEXT, deploy_status TEXT, last_check_result TEXT,
+        last_error TEXT, checked_at TEXT, last_success_at TEXT, retry_count INTEGER NOT NULL DEFAULT 0
+    )""")
+    con.execute("""CREATE TABLE sync_runs (
+        run_id TEXT PRIMARY KEY, run_type TEXT NOT NULL, next_offset INTEGER NOT NULL DEFAULT 0,
+        total INTEGER, started_at TEXT, updated_at TEXT NOT NULL, completed_at TEXT, run_status TEXT NOT NULL
+    )""")
     con.commit(); con.close()
     try:
         dl.connect_db()
     except dl.CoverSyncError as exc:
-        assert "incompatible existing covers.sqlite schema" in str(exc)
+        assert "sync_runs schema" in str(exc)
     else:
-        raise AssertionError("old incompatible PHP sqlite schema was accepted")
+        raise AssertionError("old PHP sync_runs schema was accepted")
 
 
 def test_python_atomic_commit_rename_failure_cleans_part(monkeypatch, tmp_path):
@@ -301,3 +311,76 @@ def test_python_stream_total_timeout_cleans_part(monkeypatch, tmp_path):
     else:
         raise AssertionError("slow stream was accepted")
     assert not tmp.exists()
+
+
+def test_python_verify_files_rejects_parent_target_and_broken_symlinks(monkeypatch, tmp_path):
+    covers, _state = configure_paths(monkeypatch, tmp_path)
+    con = dl.connect_db(); con.close()
+    def insert_row(subject_id: int, rel: str):
+        con = dl.connect_db()
+        con.execute("INSERT OR REPLACE INTO cover_manifest(subject_id, subject_type, relative_path, remote_filename, mime_type, file_extension, file_size, sha256, artifact_status, deploy_status) VALUES (?,2,?,?,?,?,?,?, 'available','pending_deploy')", (subject_id, rel, f"{subject_id}_bad.png", "image/png", "png", 1, "0"*64))
+        con.commit(); con.close()
+    outside = tmp_path / "outside"; outside.mkdir()
+    parent = covers / "subjects" / "000" / "777"
+    parent.parent.mkdir(parents=True, exist_ok=True)
+    parent.symlink_to(outside, target_is_directory=True)
+    insert_row(777001, "subjects/000/777/777001_bad.png")
+    target_dir = covers / "subjects" / "000" / "778"; target_dir.mkdir(parents=True)
+    (target_dir / "778001_bad.png").symlink_to(outside / "escape.png")
+    insert_row(778001, "subjects/000/778/778001_bad.png")
+    broken_dir = covers / "subjects" / "000" / "779"; broken_dir.mkdir(parents=True)
+    (broken_dir / "779001_bad.png").symlink_to(tmp_path / "missing.png")
+    insert_row(779001, "subjects/000/779/779001_bad.png")
+    rc = dl.verify_files(dl.build_parser().parse_args(["verify-files"]))
+    assert rc == 1
+    rows = list(dl.connect_db().execute("SELECT artifact_status,last_check_result FROM cover_manifest ORDER BY subject_id"))
+    assert rows and all(row["artifact_status"] == "invalid" and row["last_check_result"] == "local_invalid" for row in rows)
+
+
+def test_python_stream_total_timeout_with_real_slow_http_server(tmp_path):
+    class SlowHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.end_headers()
+            for _ in range(5):
+                self.wfile.write(b"x" * 10)
+                self.wfile.flush()
+                import time as _time
+                _time.sleep(0.15)
+        def log_message(self, *_args):
+            return
+    server = ThreadingHTTPServer(("127.0.0.1", 0), SlowHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    tmp = tmp_path / "slow.part"
+    try:
+        try:
+            dl.stream_once_to_tmp(f"http://127.0.0.1:{server.server_port}/slow", {}, None, 1, tmp, total_timeout=0.2)
+        except dl.CoverSyncError as exc:
+            assert "total timeout" in str(exc)
+        else:
+            raise AssertionError("slow real HTTP stream was accepted")
+        assert not tmp.exists()
+    finally:
+        server.shutdown(); thread.join(5)
+
+
+def test_python_lock_rejects_active_owner_and_recovers_stale(monkeypatch, tmp_path):
+    configure_paths(monkeypatch, tmp_path)
+    dl.ensure_dirs()
+    lock = dl.shard_dir(491569) / ".chronoshelter-cover-sync.lock"
+    lock.write_text(json.dumps({"pid": 999999, "created_at": dl.time.time()}))
+    monkeypatch.setattr(dl, "process_alive", lambda pid: True)
+    try:
+        dl.acquire_lock(lock)
+    except dl.CoverSyncError as exc:
+        assert "holds the shard lock" in str(exc)
+    else:
+        raise AssertionError("active lock was removed")
+    monkeypatch.setattr(dl, "process_alive", lambda pid: False)
+    lock.write_text(json.dumps({"pid": 999999, "created_at": 1}))
+    fd = dl.acquire_lock(lock, stale_after=1)
+    os.close(fd)
+    assert json.loads(lock.read_text())["pid"] == os.getpid()
+    lock.unlink()

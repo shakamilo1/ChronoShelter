@@ -43,8 +43,11 @@ FILENAME_RE_TEMPLATE = r"^{sid}_[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$"
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 CHUNK_SIZE = 128 * 1024
 API_TOTAL_TIMEOUT = 60.0
+API_MAX_BYTES = 2 * 1024 * 1024
 IMAGE_TOTAL_TIMEOUT = 120.0
 REQUIRED_MANIFEST_COLUMNS = {"subject_id", "subject_type", "downloaded_url", "observed_url", "remote_filename", "relative_path", "mime_type", "file_extension", "file_size", "sha256", "etag", "last_modified", "artifact_status", "deploy_status", "last_check_result", "last_error", "checked_at", "last_success_at", "retry_count"}
+REQUIRED_SYNC_RUNS_COLUMNS = {"run_type", "next_offset", "total", "updated_at"}
+PYTHON_SCHEMA_VERSION = 1
 
 
 class CoverSyncError(RuntimeError):
@@ -121,12 +124,23 @@ def connect_db() -> sqlite3.Connection:
     ensure_dirs()
     con = sqlite3.connect(sqlite_path())
     con.row_factory = sqlite3.Row
+    if con.execute("PRAGMA user_version").fetchone()[0] not in (0, PYTHON_SCHEMA_VERSION):
+        con.close()
+        raise CoverSyncError("incompatible existing covers.sqlite schema version; back it up and set CHRONOSHELTER_COVER_SYNC_STATE_DIR to a fresh directory")
     existing = con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='cover_manifest'").fetchone()
     if existing:
         columns = {row[1] for row in con.execute("PRAGMA table_info(cover_manifest)")}
-        missing = REQUIRED_MANIFEST_COLUMNS - columns
-        if missing:
+        if REQUIRED_MANIFEST_COLUMNS - columns:
+            con.close()
             raise CoverSyncError("incompatible existing covers.sqlite schema; back it up and set CHRONOSHELTER_COVER_SYNC_STATE_DIR to a fresh directory")
+    existing_runs = con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sync_runs'").fetchone()
+    if existing_runs:
+        info = list(con.execute("PRAGMA table_info(sync_runs)"))
+        columns = {row[1] for row in info}
+        pk = [row[1] for row in info if row[5] > 0]
+        if REQUIRED_SYNC_RUNS_COLUMNS - columns or pk != ["run_type"]:
+            con.close()
+            raise CoverSyncError("incompatible existing covers.sqlite sync_runs schema; back it up and set CHRONOSHELTER_COVER_SYNC_STATE_DIR to a fresh directory")
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS cover_manifest (
@@ -162,6 +176,7 @@ def connect_db() -> sqlite3.Connection:
         )
         """
     )
+    con.execute(f"PRAGMA user_version = {PYTHON_SCHEMA_VERSION}")
     return con
 
 
@@ -278,13 +293,31 @@ def opener(proxy: str | None) -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(proxy_handler(proxy), urllib.request.HTTPSHandler(context=ssl.create_default_context()), NoRedirectHandler)
 
 
-def request_once(url: str, headers: dict[str, str], proxy: str | None, timeout: float) -> tuple[int, dict[str, str], bytes]:
+def read_limited_response(resp: Any, deadline: float, max_bytes: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        if time.monotonic() > deadline:
+            raise CoverSyncError("API request exceeded total timeout")
+        chunk = resp.read(CHUNK_SIZE)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise CoverSyncError("API response exceeds maximum allowed size")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def request_once(url: str, headers: dict[str, str], proxy: str | None, timeout: float, deadline: float | None = None, max_bytes: int = API_MAX_BYTES) -> tuple[int, dict[str, str], bytes]:
     req = urllib.request.Request(url, headers=headers, method="GET")
+    deadline = deadline if deadline is not None else time.monotonic() + timeout
+    socket_timeout = min(timeout, max(0.1, deadline - time.monotonic()))
     try:
-        with opener(proxy).open(req, timeout=timeout) as resp:
-            return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read()
+        with opener(proxy).open(req, timeout=socket_timeout) as resp:
+            return resp.status, {k.lower(): v for k, v in resp.headers.items()}, read_limited_response(resp, deadline, max_bytes)
     except urllib.error.HTTPError as exc:
-        return exc.code, {k.lower(): v for k, v in exc.headers.items()}, exc.read()
+        return exc.code, {k.lower(): v for k, v in exc.headers.items()}, read_limited_response(exc, deadline, max_bytes)
     except urllib.error.URLError as exc:
         raise CoverSyncError(f"network error: {exc.reason}") from exc
 
@@ -330,7 +363,7 @@ def http_get(url: str, headers: dict[str, str], proxy: str | None, timeout: floa
     for attempt in range(1, retries + 1):
         if time.monotonic() > deadline:
             raise CoverSyncError("API request exceeded total timeout")
-        status, response_headers, body = request_once(url, headers, proxy, min(timeout, max(0.1, deadline - time.monotonic())))
+        status, response_headers, body = request_once(url, headers, proxy, timeout, deadline, API_MAX_BYTES)
         if not should_retry(status) or attempt == retries:
             return status, response_headers, body
         sleep_for_retry(response_headers, attempt)
@@ -367,12 +400,13 @@ def validate_image_url(url: str) -> urllib.parse.ParseResult:
 
 def follow_image_redirects_to_tmp(url: str, proxy: str | None, tmp: Path, timeout: float = 45, max_redirects: int = 5) -> tuple[int, dict[str, str], str]:
     current = url
+    deadline = time.monotonic() + IMAGE_TOTAL_TIMEOUT
     for _ in range(max_redirects + 1):
         validate_image_url(current)
         if is_no_icon(current):
             raise RemoteMissingCover("Bangumi no-icon placeholder rejected")
         tmp.unlink(missing_ok=True)
-        status, headers, _size = stream_once_to_tmp(current, image_headers(), proxy, timeout, tmp)
+        status, headers, _size = stream_once_to_tmp(current, image_headers(), proxy, min(timeout, max(0.1, deadline - time.monotonic())), tmp, total_timeout=max(0.1, deadline - time.monotonic()))
         if status in {301, 302, 303, 307, 308}:
             tmp.unlink(missing_ok=True)
             location = headers.get("location")
@@ -430,6 +464,10 @@ def validate_png(data: bytes) -> bool:
 
 
 def validate_image_file(path: Path, content_type: str) -> tuple[str, str, int, str]:
+    ensure_safe_existing_components(path)
+    if path.is_symlink():
+        raise CoverSyncError("image path must not be a symlink")
+    ensure_under(covers_dir(), path)
     if Image is None:
         raise CoverSyncError("Pillow is required for full image validation; install with: python -m pip install Pillow")
     data = path.read_bytes()
@@ -490,6 +528,41 @@ def manifest_file_valid(row: sqlite3.Row) -> bool:
     except Exception:
         return False
 
+
+
+def process_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def acquire_lock(lock: Path, stale_after: float = 3600.0) -> int:
+    payload = json.dumps({"pid": os.getpid(), "created_at": time.time(), "tool": "ChronoShelter Python cover sync"})
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, payload.encode("utf-8"))
+        return fd
+    except FileExistsError:
+        try:
+            data = json.loads(lock.read_text(encoding="utf-8"))
+            pid = int(data.get("pid", 0))
+            created = float(data.get("created_at", 0))
+        except Exception:
+            pid = 0; created = 0.0
+        if process_alive(pid) or (created and time.time() - created < stale_after):
+            raise CoverSyncError("another cover sync process holds the shard lock")
+        lock.unlink(missing_ok=True)
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, payload.encode("utf-8"))
+        return fd
 
 def commit_tmp_no_clobber(tmp: Path, target: Path) -> None:
     shard_dir(int(target.name.split("_", 1)[0]))

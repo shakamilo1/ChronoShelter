@@ -32,18 +32,17 @@ def test_login_redirects_are_relative_and_validated():
     assert "header('Location: ./')" in login
 
 
-def test_cover_cli_uses_anime_bulk_api_and_custom_user_agent_only():
+def test_cover_cli_network_sync_lives_only_in_python_tool():
     cli = (ROOT / "bin" / "bangumi_covers.php").read_text(encoding="utf-8")
+    py = (ROOT / "tools" / "download_covers.py").read_text(encoding="utf-8")
 
-    assert "SUBJECT_TYPE_ANIME = 2" in cli
-    assert "PAGE_LIMIT = 50" in cli
-    assert "type=' . SUBJECT_TYPE_ANIME" in cli
-    assert "images" in cli and "large" in cli
-    assert "images']['common" not in cli
-    assert "/v0/subjects/{id}" not in cli
-    assert "/image" not in cli
-    assert "shakamilo1/ChronoShelter-cover-sync/1.0" in cli
-    assert "BANGUMI_ACCESS_TOKEN" in cli
+    assert "https://api.bgm.tv/v0/subjects" not in cli
+    assert "lain.bgm.tv" not in cli
+    assert "function fetch_subject_page" not in cli
+    assert "function download_image_to_tmp" not in cli
+    assert "https://api.bgm.tv/v0/subjects" in py
+    assert "SUBJECT_TYPE = 2" in py
+    assert "PAGE_LIMIT = 50" in py
 
 
 def test_cover_partition_paths_are_documented_and_safe():

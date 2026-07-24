@@ -173,7 +173,7 @@ Windows PowerShell 小规模隔离测试（不设置 Token，只扫描一页、�
 Remove-Item Env:BANGUMI_ACCESS_TOKEN -ErrorAction SilentlyContinue
 $env:CHRONOSHELTER_COVERS_DIR='\\AS6604T-BA68\Web\chronoshelter-pr6-runtime\covers'
 $env:CHRONOSHELTER_COVER_SYNC_STATE_DIR='\\AS6604T-BA68\Web\chronoshelter-pr6-runtime\var\cover-sync'
-python tools/download_covers.py sync --max-pages=1 --max-items=1 --api-delay=0 --download-delay=0 --proxy http://127.0.0.1:7890 --verbose
+python tools/download_covers.py sync --max-pages=1 --max-items=1 --api-delay=0 --download-delay=0 --verbose
 python tools/download_covers.py verify-files
 python tools/download_covers.py export-mapping --file '\\AS6604T-BA68\Web\chronoshelter-pr6-runtime\var\cover-sync\reports\cover-mapping-test.jsonl'
 ```

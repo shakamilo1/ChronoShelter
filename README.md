@@ -385,4 +385,4 @@ python tools/download_covers.py verify-files
 python tools/download_covers.py export-mapping --file var/cover-sync/reports/cover-mapping.jsonl
 ```
 
-随后在 NAS 上复制/确认封面文件已存在，再运行 `php bin/bangumi_covers.php import-mapping --file=var/cover-sync/reports/cover-mapping.jsonl`。如果需要代理，可传 `--proxy http://127.0.0.1:7890`，或使用 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 环境变量。
+随后在 NAS 上复制/确认封面文件已存在，再运行 `php bin/bangumi_covers.php import-mapping --file=var/cover-sync/reports/cover-mapping.jsonl`。默认命令不带代理；只有确实使用本地 HTTP 代理时才添加 `--proxy <代理地址>`，也可使用 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 环境变量。
