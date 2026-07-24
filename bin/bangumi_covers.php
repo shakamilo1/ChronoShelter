@@ -75,7 +75,7 @@ function cover_absolute_path(string $relativePath): string
 
 function validate_image_file(string $path, string $expectedMime): array
 {
-    if (is_link($path) || !is_file($path) || !path_within_covers($path) && str_starts_with($path, cover_sync_paths()['covers'])) {
+    if (is_link($path) || !is_file($path) || !path_within_covers($path)) {
         throw new RuntimeException('image path is not a safe local file');
     }
     $size = filesize($path);
@@ -97,6 +97,11 @@ function validate_image_file(string $path, string $expectedMime): array
         'image/webp' => 'webp',
         default => throw new RuntimeException('unsupported image MIME'),
     };
+    $pathExt = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+    if ($pathExt === 'jpeg') $pathExt = 'jpg';
+    if ($pathExt !== $ext) {
+        throw new RuntimeException('image extension mismatch');
+    }
     if ($ext === 'jpg' && !(str_starts_with($data, "\xff\xd8") && str_ends_with($data, "\xff\xd9"))) {
         throw new RuntimeException('JPEG structure is incomplete');
     }
@@ -109,6 +114,24 @@ function validate_image_file(string $path, string $expectedMime): array
     $info = @getimagesize($path);
     if ($info === false || ($info[0] ?? 0) <= 0 || ($info[1] ?? 0) <= 0) {
         throw new RuntimeException('image dimensions are invalid');
+    }
+    $pixels = (int) $info[0] * (int) $info[1];
+    if ($pixels <= 0 || $pixels > 50_000_000) {
+        throw new RuntimeException('image dimensions exceed safety limit');
+    }
+    if (!function_exists('imagecreatefromstring')) {
+        throw new RuntimeException('GD image decoder is required for import-mapping validation');
+    }
+    set_error_handler(static function($severity, $message, $file, $line) { throw new ErrorException($message, 0, $severity, $file, $line); });
+    try {
+        $image = imagecreatefromstring($data);
+    } catch (Throwable $exc) {
+        restore_error_handler();
+        throw new RuntimeException('image decoder rejected file: ' . $exc->getMessage(), 0, $exc);
+    }
+    restore_error_handler();
+    if ($image === false) {
+        throw new RuntimeException('image decoder rejected file');
     }
     return ['mime_type' => $mime, 'extension' => $ext, 'file_size' => $size, 'sha256' => hash_file('sha256', $path)];
 }

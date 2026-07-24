@@ -103,3 +103,48 @@ def test_old_php_commands_are_disabled(tmp_path):
     assert proc.returncode == 0
     assert json.loads(proc.stdout)["code"] == 2
     assert "disabled on NAS" in proc.stderr
+
+
+def test_php_import_validator_rejects_external_path_and_corrupt_png(tmp_path):
+    covers = tmp_path / "covers"
+    outside = tmp_path / "outside.png"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_bytes(b"\x89PNG\r\n\x1a\nnot-a-complete-png")
+    corrupt = covers / "subjects" / "000" / "009" / "9001_bad.png"
+    corrupt.parent.mkdir(parents=True, exist_ok=True)
+    corrupt.write_bytes(b"\x89PNG\r\n\x1a\nnot-a-complete-png")
+    php = textwrap.dedent(f"""
+    <?php
+    require {json.dumps(str(ROOT / 'bin' / 'bangumi_covers.php'))};
+    $errors = [];
+    foreach ([{json.dumps(str(outside))}, {json.dumps(str(corrupt))}] as $path) {{
+        try {{ validate_image_file($path, 'image/png'); $errors[] = null; }} catch (Throwable $e) {{ $errors[] = $e->getMessage(); }}
+    }}
+    echo json_encode($errors, JSON_UNESCAPED_SLASHES);
+    ?>
+    """)
+    proc = run_php(php, {"CHRONOSHELTER_COVERS_DIR": str(covers)})
+    assert proc.returncode == 0, proc.stderr
+    errors = json.loads(proc.stdout)
+    assert "safe local file" in errors[0]
+    assert errors[1] is not None
+
+
+def test_php_import_validator_rejects_parent_symlink(tmp_path):
+    covers = tmp_path / "covers"
+    outside = tmp_path / "outside"
+    outside.mkdir(parents=True)
+    parent = covers / "subjects" / "000" / "010"
+    parent.parent.mkdir(parents=True)
+    parent.symlink_to(outside, target_is_directory=True)
+    php = textwrap.dedent(f"""
+    <?php
+    require {json.dumps(str(ROOT / 'bin' / 'bangumi_covers.php'))};
+    $error = null;
+    try {{ import_mapping_row_is_safe(['subject_id' => '10001', 'status' => 'cached', 'remote_filename' => '10001_bad.png', 'local_path' => 'subjects/000/010/10001_bad.png', 'content_type' => 'image/png', 'file_size' => 1, 'sha256' => str_repeat('0', 64)]); }} catch (Throwable $e) {{ $error = $e->getMessage(); }}
+    echo json_encode(['error' => $error], JSON_UNESCAPED_SLASHES);
+    ?>
+    """)
+    proc = run_php(php, {"CHRONOSHELTER_COVERS_DIR": str(covers)})
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["error"] is not None

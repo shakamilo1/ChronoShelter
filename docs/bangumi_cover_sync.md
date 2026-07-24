@@ -27,7 +27,7 @@ Windows 维护机建议使用 Python 3.12+，并安装测试/同步所需依赖�
 python -m pip install -r requirements-dev.txt
 ```
 
-同步器支持 `CHRONOSHELTER_COVERS_DIR` 指向 NAS SMB/UNC 封面目录，例如 `\\AS6604T-BA68\Web\chronoshelter-pr6-runtime\covers`，并支持 `CHRONOSHELTER_COVER_SYNC_STATE_DIR` 指向非公开状态目录。
+同步器支持 `CHRONOSHELTER_COVERS_DIR` 指向 NAS SMB/UNC 封面目录，例如 `\\NAS-SHARE\Web\chronoshelter-pr6-runtime\covers`，并支持 `CHRONOSHELTER_COVER_SYNC_STATE_DIR` 指向非公开状态目录。
 
 ## User-Agent 与可选 Token
 
@@ -89,7 +89,6 @@ level2 = intdiv(subject_id % 1000000, 1000)
 var/cover-sync/
 ├── covers.sqlite
 ├── tmp/
-├── logs/
 └── reports/
 ```
 
@@ -165,17 +164,17 @@ var/cover-sync/covers.sqlite
 
 ## Windows Python + VPN + NAS SMB 部署
 
-最终部署结构是：PHP 网站运行在 NAS 上，只读取 MariaDB/本地 `covers/`；Bangumi 联网同步在开启 VPN 的 Windows 上执行 `python tools/download_covers.py`。`CHRONOSHELTER_COVERS_DIR` 可以指向 NAS 的 UNC/SMB 共享路径（例如 `\\AS6604T-BA68\Web\chronoshelter-pr6-runtime\covers`），`CHRONOSHELTER_COVER_SYNC_STATE_DIR` 可以指向同一共享中的非公开状态目录。同步器只写 SQLite 状态、封面文件和 JSONL 映射，不连接生产 MariaDB；NAS 上只运行 `php bin/bangumi_covers.php import-mapping --file=...` 事务导入映射。
+最终部署结构是：PHP 网站运行在 NAS 上，只读取 MariaDB/本地 `covers/`；Bangumi 联网同步在开启 VPN 的 Windows 上执行 `python tools/download_covers.py`。`CHRONOSHELTER_COVERS_DIR` 可以指向 NAS 的 UNC/SMB 共享路径（例如 `\\NAS-SHARE\Web\chronoshelter-pr6-runtime\covers`），`CHRONOSHELTER_COVER_SYNC_STATE_DIR` 可以指向同一共享中的非公开状态目录。同步器只写 SQLite 状态、封面文件和 JSONL 映射，不连接生产 MariaDB；NAS 上只运行 `php bin/bangumi_covers.php import-mapping --file=...` 事务导入映射。
 
 Windows PowerShell 小规模隔离测试（不设置 Token，只扫描一页、最多下载一张、使用全新 NAS 测试目录、不连接或修改生产 MariaDB）：
 
 ```powershell
 Remove-Item Env:BANGUMI_ACCESS_TOKEN -ErrorAction SilentlyContinue
-$env:CHRONOSHELTER_COVERS_DIR='\\AS6604T-BA68\Web\chronoshelter-pr6-runtime\covers'
-$env:CHRONOSHELTER_COVER_SYNC_STATE_DIR='\\AS6604T-BA68\Web\chronoshelter-pr6-runtime\var\cover-sync'
+$env:CHRONOSHELTER_COVERS_DIR='\\NAS-SHARE\Web\chronoshelter-pr6-runtime\covers'
+$env:CHRONOSHELTER_COVER_SYNC_STATE_DIR='\\NAS-SHARE\Web\chronoshelter-pr6-runtime\var\cover-sync'
 python tools/download_covers.py sync --max-pages=1 --max-items=1 --api-delay=0 --download-delay=0 --verbose
 python tools/download_covers.py verify-files
-python tools/download_covers.py export-mapping --file '\\AS6604T-BA68\Web\chronoshelter-pr6-runtime\var\cover-sync\reports\cover-mapping-test.jsonl'
+python tools/download_covers.py export-mapping --file '\\NAS-SHARE\Web\chronoshelter-pr6-runtime\var\cover-sync\reports\cover-mapping-test.jsonl'
 ```
 
 NAS 侧导入命令：

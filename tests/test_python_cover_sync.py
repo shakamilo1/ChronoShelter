@@ -3,8 +3,11 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import subprocess
 import sys
+import textwrap
 import threading
+import time
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -206,9 +209,9 @@ def test_python_invalid_file_redownloads_and_export_skips_invalid(monkeypatch, t
 
 
 def test_python_unc_style_paths_are_accepted(monkeypatch):
-    unc_like = "\\\\AS6604T-BA68\\Web\\chronoshelter-pr6-runtime\\covers"
+    unc_like = "\\\\NAS-SHARE\\Web\\chronoshelter-pr6-runtime\\covers"
     monkeypatch.setenv("CHRONOSHELTER_COVERS_DIR", unc_like)
-    assert "AS6604T-BA68" in str(dl.covers_dir())
+    assert "NAS-SHARE" in str(dl.covers_dir())
     assert dl.partition_prefix(1234567).as_posix() == "subjects/001/234"
 
 
@@ -366,21 +369,173 @@ def test_python_stream_total_timeout_with_real_slow_http_server(tmp_path):
         server.shutdown(); thread.join(5)
 
 
-def test_python_lock_rejects_active_owner_and_recovers_stale(monkeypatch, tmp_path):
+def test_python_schema_reopens_and_rejects_wrong_primary_keys(monkeypatch, tmp_path):
     configure_paths(monkeypatch, tmp_path)
-    dl.ensure_dirs()
-    lock = dl.shard_dir(491569) / ".chronoshelter-cover-sync.lock"
-    lock.write_text(json.dumps({"pid": 999999, "created_at": dl.time.time()}))
-    monkeypatch.setattr(dl, "process_alive", lambda pid: True)
+    con = dl.connect_db(); con.close()
+    # Current Python schema can be reopened idempotently.
+    con = dl.connect_db()
+    assert con.execute("PRAGMA user_version").fetchone()[0] == dl.PYTHON_SCHEMA_VERSION
+    con.close()
+
+    bad_state = tmp_path / "bad-state"
+    monkeypatch.setenv("CHRONOSHELTER_COVER_SYNC_STATE_DIR", str(bad_state))
+    bad_state.mkdir(parents=True)
+    import sqlite3
+    con = sqlite3.connect(bad_state / "covers.sqlite")
+    con.execute("""CREATE TABLE cover_manifest (
+        subject_id INTEGER, subject_type INTEGER NOT NULL DEFAULT 2,
+        downloaded_url TEXT, observed_url TEXT, remote_filename TEXT, relative_path TEXT,
+        mime_type TEXT, file_extension TEXT, file_size INTEGER, sha256 TEXT, etag TEXT,
+        last_modified TEXT, artifact_status TEXT, deploy_status TEXT, last_check_result TEXT,
+        last_error TEXT, checked_at TEXT, last_success_at TEXT, retry_count INTEGER NOT NULL DEFAULT 0
+    )""")
+    con.execute("""CREATE TABLE sync_runs (
+        run_type TEXT PRIMARY KEY, next_offset INTEGER NOT NULL DEFAULT 0,
+        total INTEGER, updated_at TEXT NOT NULL
+    )""")
+    con.commit(); con.close()
     try:
-        dl.acquire_lock(lock)
+        dl.connect_db()
     except dl.CoverSyncError as exc:
-        assert "holds the shard lock" in str(exc)
+        assert "cover_manifest schema" in str(exc)
     else:
-        raise AssertionError("active lock was removed")
-    monkeypatch.setattr(dl, "process_alive", lambda pid: False)
-    lock.write_text(json.dumps({"pid": 999999, "created_at": 1}))
-    fd = dl.acquire_lock(lock, stale_after=1)
-    os.close(fd)
-    assert json.loads(lock.read_text())["pid"] == os.getpid()
-    lock.unlink()
+        raise AssertionError("cover_manifest without subject_id primary key was accepted")
+
+
+def test_python_lock_uses_formal_commit_path_and_no_os_kill(monkeypatch, tmp_path):
+    assert "os.kill" not in (ROOT / "tools" / "download_covers.py").read_text()
+    covers, _state = configure_paths(monkeypatch, tmp_path)
+    shard = covers / "subjects" / "000" / "491"
+    shard.mkdir(parents=True)
+    start = tmp_path / "start"
+    script = textwrap.dedent(f"""
+    import importlib.util, os, pathlib, sys, time
+    root = pathlib.Path({str(ROOT)!r})
+    spec = importlib.util.spec_from_file_location('download_covers', root / 'tools' / 'download_covers.py')
+    dl = importlib.util.module_from_spec(spec); sys.modules[spec.name] = dl; spec.loader.exec_module(dl)
+    os.environ['CHRONOSHELTER_COVERS_DIR'] = {str(covers)!r}
+    tmp = pathlib.Path(sys.argv[1]); target = pathlib.Path(sys.argv[2]); mode = sys.argv[3]
+    if mode == 'slow':
+        real_rename = dl.os.rename
+        def slow_rename(src, dst):
+            pathlib.Path({str(start)!r}).write_text('locked')
+            time.sleep(1.0)
+            return real_rename(src, dst)
+        dl.os.rename = slow_rename
+    try:
+        dl.commit_tmp_no_clobber(tmp, target)
+        print('ok')
+    except Exception as exc:
+        print(type(exc).__name__ + ':' + str(exc))
+        sys.exit(2)
+    """)
+    target = shard / "491569_race.png"
+    tmp1 = shard / ".one.part"; tmp1.write_bytes(b"one")
+    tmp2 = shard / ".two.part"; tmp2.write_bytes(b"two")
+    p1 = subprocess.Popen([sys.executable, "-c", script, str(tmp1), str(target), "slow"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    deadline = time.time() + 5
+    while not start.exists() and time.time() < deadline:
+        time.sleep(0.02)
+    p2 = subprocess.run([sys.executable, "-c", script, str(tmp2), str(target), "fast"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    out1, err1 = p1.communicate(timeout=10)
+    assert p1.returncode == 0, (out1, err1)
+    assert p2.returncode != 0
+    assert "holds the shard lock" in p2.stdout or "FileExistsError" in p2.stdout
+    assert target.read_bytes() == b"one"
+    assert tmp2.exists()  # loser did not publish or delete someone else's input.
+
+    # A process can exit while holding the OS lock; a later formal commit can proceed.
+    lock = shard / ".chronoshelter-cover-sync.lock"
+    crash_script = textwrap.dedent(f"""
+    import importlib.util, os, pathlib, sys
+    root = pathlib.Path({str(ROOT)!r})
+    spec = importlib.util.spec_from_file_location('download_covers', root / 'tools' / 'download_covers.py')
+    dl = importlib.util.module_from_spec(spec); sys.modules[spec.name] = dl; spec.loader.exec_module(dl)
+    with dl.acquire_lock(pathlib.Path({str(lock)!r})):
+        os._exit(0)
+    """)
+    subprocess.run([sys.executable, "-c", crash_script], check=True)
+    tmp3 = shard / ".three.part"; tmp3.write_bytes(b"three")
+    target2 = shard / "491569_after_crash.png"
+    dl.commit_tmp_no_clobber(tmp3, target2)
+    assert target2.read_bytes() == b"three"
+
+
+def test_python_real_wall_clock_timeouts_and_retry_after(monkeypatch, tmp_path):
+    configure_paths(monkeypatch, tmp_path)
+    class SlowJsonHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            for chunk in [b'{"total":', b'1,', b'"limit":50,', b'"offset":0,', b'"data":[]}']:
+                self.wfile.write(chunk); self.wfile.flush(); time.sleep(0.15)
+        def log_message(self, *_args): return
+    server = ThreadingHTTPServer(("127.0.0.1", 0), SlowJsonHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+    try:
+        start = time.monotonic()
+        try:
+            dl.request_once(f"http://127.0.0.1:{server.server_port}/slow-json", {}, None, 1, deadline=start + 0.25)
+        except dl.CoverSyncError as exc:
+            assert "total timeout" in str(exc)
+        else:
+            raise AssertionError("slow API response was accepted")
+        assert time.monotonic() - start <= 0.75
+    finally:
+        server.shutdown(); thread.join(5)
+
+    calls = 0
+    def retry_once(url, headers, proxy, timeout, deadline=None, max_bytes=dl.API_MAX_BYTES):
+        nonlocal calls
+        calls += 1
+        return 429, {"retry-after": "10"}, b""
+    monkeypatch.setattr(dl, "request_once", retry_once)
+    start = time.monotonic()
+    try:
+        dl.http_get("https://api.bgm.tv/v0/subjects", {}, None, 1, retries=2, total_timeout=0.2)
+    except dl.CoverSyncError as exc:
+        assert "retry delay" in str(exc) or "total timeout" in str(exc)
+    else:
+        raise AssertionError("Retry-After beyond deadline was accepted")
+    assert time.monotonic() - start <= 0.5
+    assert calls == 1
+
+
+def test_python_real_slow_image_and_redirect_share_deadline(monkeypatch, tmp_path):
+    configure_paths(monkeypatch, tmp_path)
+    class SlowImageHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/redir":
+                self.send_response(302); self.send_header("Location", "/slow"); self.end_headers(); return
+            self.send_response(200); self.send_header("Content-Type", "image/png"); self.end_headers()
+            for _ in range(5):
+                self.wfile.write(b"x" * 10); self.wfile.flush(); time.sleep(0.15)
+        def log_message(self, *_args): return
+    server = ThreadingHTTPServer(("127.0.0.1", 0), SlowImageHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+    tmp = tmp_path / "slow-image.part"
+    try:
+        start = time.monotonic()
+        try:
+            dl.stream_once_to_tmp(f"http://127.0.0.1:{server.server_port}/slow", {}, None, 1, tmp, total_timeout=0.25)
+        except dl.CoverSyncError as exc:
+            assert "total timeout" in str(exc)
+        else:
+            raise AssertionError("slow image response was accepted")
+        assert time.monotonic() - start <= 0.75
+        assert not tmp.exists()
+
+        monkeypatch.setattr(dl, "validate_image_url", lambda _url: None)
+        tmp2 = tmp_path / "slow-redir.part"
+        start = time.monotonic()
+        try:
+            dl.follow_image_redirects_to_tmp(f"http://127.0.0.1:{server.server_port}/redir", None, tmp2, timeout=1, total_timeout=0.25)
+        except dl.CoverSyncError as exc:
+            assert "total timeout" in str(exc)
+        else:
+            raise AssertionError("redirect slow image response was accepted")
+        assert time.monotonic() - start <= 0.75
+        assert not tmp2.exists()
+    finally:
+        server.shutdown(); thread.join(5)
