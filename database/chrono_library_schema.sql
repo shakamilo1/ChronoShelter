@@ -21,18 +21,10 @@ CREATE TABLE IF NOT EXISTS `collections` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `cover_cache` (
-  `subject_id` INT UNSIGNED NOT NULL COMMENT 'Cover cache status for a Bangumi subject image',
-  `status` VARCHAR(32) NOT NULL DEFAULT 'missing' COMMENT 'missing, cached, failed, invalid',
-  `remote_filename` VARCHAR(255) NULL COMMENT 'Safe basename from Bangumi images.large URL, e.g. 1234_Ewjo.jpg',
-  `source_url` VARCHAR(1024) NULL COMMENT 'Original Bangumi images.large URL for the cached local file',
+  `subject_id` INT UNSIGNED NOT NULL COMMENT 'Bangumi subject id for the current cover mapping',
+  `status` VARCHAR(32) NOT NULL DEFAULT 'missing' COMMENT 'Current web mapping status: missing, cached, no_cover',
+  `remote_filename` VARCHAR(255) NULL COMMENT 'Safe basename from current Bangumi images.large URL, e.g. 1234_Ewjo.jpg',
   `local_path` VARCHAR(512) NULL COMMENT 'subjects/{level1}/{level2}/{subject_id}_{BangumiSuffix}.{ext} relative to covers/ when cached',
-  `error` TEXT NULL,
-  `http_status` SMALLINT UNSIGNED NULL,
-  `content_type` VARCHAR(128) NULL,
-  `file_size` INT UNSIGNED NULL,
-  `sha256` CHAR(64) NULL,
-  `width` SMALLINT UNSIGNED NULL,
-  `height` SMALLINT UNSIGNED NULL,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`subject_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

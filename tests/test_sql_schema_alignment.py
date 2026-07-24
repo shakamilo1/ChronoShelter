@@ -102,17 +102,17 @@ def test_split_index_files_target_single_databases():
 
 def test_cover_cache_schema_contains_explicit_mapping_columns():
     sql = Path("sql/create_chrono_library_tables.sql").read_text(encoding="utf-8")
-    for column in ["remote_filename", "source_url", "local_path", "content_type", "file_size", "sha256", "error", "updated_at"]:
+    for column in ["remote_filename", "local_path", "updated_at"]:
         assert f"`{column}`" in sql
     assert "subjects/{level1}/{level2}/{subject_id}_{BangumiSuffix}.{ext}" in sql
     migration = Path("sql/migrations/003_cover_cache_mapping_columns.sql").read_text(encoding="utf-8")
     assert "ADD COLUMN IF NOT EXISTS `remote_filename`" in migration
-    assert "ADD COLUMN IF NOT EXISTS `source_url`" in migration
-    assert "ADD COLUMN IF NOT EXISTS `sha256`" in migration
+    assert "DROP COLUMN IF EXISTS `source_url`" in migration
+    assert "DROP COLUMN IF EXISTS `sha256`" in migration
 
 
 def test_fresh_cover_cache_schema_matches_import_mapping_columns():
-    required = ["subject_id", "status", "remote_filename", "source_url", "local_path", "content_type", "file_size", "sha256", "updated_at"]
+    required = ["subject_id", "status", "remote_filename", "local_path", "updated_at"]
     for schema_path in [Path("database/chrono_library_schema.sql"), Path("sql/create_chrono_library_tables.sql")]:
         sql = schema_path.read_text(encoding="utf-8")
         start = sql.index("CREATE TABLE IF NOT EXISTS `cover_cache`")
@@ -121,5 +121,5 @@ def test_fresh_cover_cache_schema_matches_import_mapping_columns():
             assert f"`{column}`" in block, f"{schema_path} is missing {column} in fresh cover_cache schema"
         assert "PRIMARY KEY (`subject_id`)" in block
         assert "`remote_filename` VARCHAR(255)" in block
-        assert "`source_url` VARCHAR(1024)" in block
-        assert "`sha256` CHAR(64)" in block
+        for removed in ["`source_url`", "`content_type`", "`file_size`", "`sha256`", "`error`", "`http_status`", "`width`", "`height`"]:
+            assert removed not in block

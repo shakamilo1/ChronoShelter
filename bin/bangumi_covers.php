@@ -152,7 +152,7 @@ function import_mapping_row_is_safe(array $row): array
                 throw new RuntimeException('no_cover mapping must not include file fields for subject_id=' . $subjectId);
             }
         }
-        return ['subject_id' => $subjectId, 'status' => 'no_cover', 'remote_filename' => null, 'source_url' => null, 'local_path' => null, 'content_type' => null, 'file_size' => null, 'sha256' => null, 'updated_at' => $row['updated_at'] ?? null];
+        return ['subject_id' => $subjectId, 'status' => 'no_cover', 'remote_filename' => null, 'local_path' => null, 'updated_at' => $row['updated_at'] ?? null];
     }
     $relativePath = (string) ($row['local_path'] ?? '');
     $remoteFilename = (string) ($row['remote_filename'] ?? '');
@@ -186,7 +186,7 @@ function import_mapping_row_is_safe(array $row): array
     if ($remoteExt !== $validated['extension']) {
         throw new RuntimeException('remote filename extension mismatch for subject_id=' . $subjectId);
     }
-    return ['subject_id' => $subjectId, 'status' => 'cached', 'remote_filename' => $remoteFilename, 'source_url' => $row['source_url'] ?? null, 'local_path' => $relativePath, 'content_type' => $validated['mime_type'], 'file_size' => $validated['file_size'], 'sha256' => $validated['sha256'], 'updated_at' => $row['updated_at'] ?? null];
+    return ['subject_id' => $subjectId, 'status' => 'cached', 'remote_filename' => $remoteFilename, 'local_path' => $relativePath, 'updated_at' => $row['updated_at'] ?? null];
 }
 
 function cover_sync_library_db(): object
@@ -218,9 +218,9 @@ function import_mapping(array $options): array
     $pdo = cover_sync_library_db();
     $pdo->beginTransaction();
     try {
-        $stmt = $pdo->prepare('INSERT INTO cover_cache (subject_id, status, remote_filename, source_url, local_path, content_type, file_size, sha256, updated_at)
-            VALUES (:subject_id, :status, :remote_filename, :source_url, :local_path, :content_type, :file_size, :sha256, COALESCE(:updated_at, CURRENT_TIMESTAMP))
-            ON DUPLICATE KEY UPDATE status = IF(VALUES(status) = \'no_cover\' AND status = \'cached\', status, VALUES(status)), remote_filename = IF(VALUES(status) = \'no_cover\' AND status = \'cached\', remote_filename, VALUES(remote_filename)), source_url = IF(VALUES(status) = \'no_cover\' AND status = \'cached\', source_url, VALUES(source_url)), local_path = IF(VALUES(status) = \'no_cover\' AND status = \'cached\', local_path, VALUES(local_path)), content_type = IF(VALUES(status) = \'no_cover\' AND status = \'cached\', content_type, VALUES(content_type)), file_size = IF(VALUES(status) = \'no_cover\' AND status = \'cached\', file_size, VALUES(file_size)), sha256 = IF(VALUES(status) = \'no_cover\' AND status = \'cached\', sha256, VALUES(sha256)), updated_at = VALUES(updated_at)');
+        $stmt = $pdo->prepare("INSERT INTO cover_cache (subject_id, status, remote_filename, local_path, updated_at)
+            VALUES (:subject_id, :status, :remote_filename, :local_path, COALESCE(:updated_at, CURRENT_TIMESTAMP))
+            ON DUPLICATE KEY UPDATE status = IF(VALUES(status) = 'no_cover' AND status = 'cached', status, VALUES(status)), remote_filename = IF(VALUES(status) = 'no_cover' AND status = 'cached', remote_filename, VALUES(remote_filename)), local_path = IF(VALUES(status) = 'no_cover' AND status = 'cached', local_path, VALUES(local_path)), updated_at = VALUES(updated_at)");
         foreach ($rows as $row) $stmt->execute($row);
         $pdo->commit();
     } catch (Throwable $exc) {

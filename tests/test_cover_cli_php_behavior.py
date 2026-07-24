@@ -200,11 +200,14 @@ def test_php_import_mapping_upserts_real_jsonl_fields(tmp_path):
     assert data["executeCalls"] == 2
     assert data["rowCount"] == 1
     row = data["row"]
-    for key in ["subject_id", "status", "remote_filename", "source_url", "local_path", "content_type", "file_size", "sha256", "updated_at"]:
+    for key in ["subject_id", "status", "remote_filename", "local_path", "updated_at"]:
         assert key in row
     assert row["subject_id"] == 9001
     assert row["status"] == "cached"
     assert row["remote_filename"] == "9001_ok.png"
     assert row["local_path"] == "subjects/000/009/9001_ok.png"
-    assert row["source_url"].endswith("?v=2")
+    assert "source_url" not in row
+    assert "content_type" not in row
+    assert "file_size" not in row
+    assert "sha256" not in row
     assert data["commits"] == 2

@@ -72,8 +72,8 @@ def test_install_check_requires_cover_cache_mapping_columns():
 
     assert "required_columns" in install
     assert "remote_filename" in install
-    assert "source_url" in install
-    assert "sha256" in install
+    assert "source_url" not in install
+    assert "sha256" not in install
     assert "column_exists" in check
 
 

@@ -45,7 +45,7 @@ function required_columns(): array
 {
     return [
         'library' => [
-            'cover_cache' => ['subject_id', 'status', 'remote_filename', 'source_url', 'local_path', 'content_type', 'file_size', 'sha256', 'error', 'updated_at'],
+            'cover_cache' => ['subject_id', 'status', 'remote_filename', 'local_path', 'updated_at'],
         ],
     ];
 }
