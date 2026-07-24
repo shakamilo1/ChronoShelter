@@ -105,10 +105,7 @@ def test_cover_cache_schema_contains_explicit_mapping_columns():
     for column in ["remote_filename", "local_path", "updated_at"]:
         assert f"`{column}`" in sql
     assert "subjects/{level1}/{level2}/{subject_id}_{BangumiSuffix}.{ext}" in sql
-    migration = Path("sql/migrations/003_cover_cache_mapping_columns.sql").read_text(encoding="utf-8")
-    assert "ADD COLUMN IF NOT EXISTS `remote_filename`" in migration
-    assert "DROP COLUMN IF EXISTS `source_url`" in migration
-    assert "DROP COLUMN IF EXISTS `sha256`" in migration
+    assert not Path("sql/migrations/003_cover_cache_mapping_columns.sql").exists()
 
 
 def test_fresh_cover_cache_schema_matches_import_mapping_columns():

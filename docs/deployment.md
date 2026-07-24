@@ -216,7 +216,7 @@ mysql -u root -p chrono_bangumi < sql/migrations/004_add_subjects_pagination_ind
 
 ## 12. 动画封面离线同步
 
-网页请求不会下载 Bangumi 封面，也不会访问 `api.bgm.tv` 或 `lain.bgm.tv`。封面只由 Windows/Python 离线工具维护，并且固定只处理 Bangumi `type=2` 动画、批量接口 `GET /v0/subjects?type=2&limit=50&offset=...`、`images.large`。API Token 只发送给 `https://api.bgm.tv` JSON 请求，图片下载请求不携带 Authorization，图片重定向也会重新生成无 Token 请求头。NAS/PHP 不负责联网下载；Windows Python 同步器只使用批量 subjects API 与 images.large，避免误用 `/v0/subjects/{id}/image` 或远程默认图。
+网页请求不会下载 Bangumi 封面，也不会访问 `api.bgm.tv` 或 `lain.bgm.tv`。封面只由 Windows/Python 离线工具维护，并且固定只处理 Bangumi `type=2` 动画、批量接口 `GET /v0/subjects?type=2&limit=50&offset=...`、`images.large`。对标准 Bangumi `images.large` 文件名，优先将 API URL basename 与 SQLite 中保存的 `remote_filename` 比较；文件名相同且本地文件完整时跳过下载，文件名变化时下载新版，只有异常或不可识别 basename 才退回完整 URL 比较。API Token 只发送给 `https://api.bgm.tv` JSON 请求，图片下载请求不携带 Authorization，图片重定向也会重新生成无 Token 请求头。NAS 不负责联网下载；Windows Python 同步器只使用批量 subjects API 与 images.large，避免误用 `/v0/subjects/{id}/image` 或远程默认图。
 
 小规模验证（不会启动完整下载）：
 
@@ -230,7 +230,7 @@ python tools/download_covers.py sync --max-pages=1 --max-items=1 --api-delay=0 -
 python tools/download_covers.py sync --resume
 ```
 
-验证文件、导出映射，并在复制 `covers/subjects/` 后由 NAS/PHP 导入：
+验证文件、导出映射，并在确认 `covers/subjects/` 已写入 NAS 共享目录后由 Windows PHP 连接 NAS MariaDB 导入：
 
 ```bash
 python tools/download_covers.py verify-files
@@ -238,7 +238,7 @@ python tools/download_covers.py export-mapping --file=var/cover-sync/reports/cov
 php bin/bangumi_covers.php import-mapping --file=var/cover-sync/reports/cover-mapping.jsonl
 ```
 
-离线 Python 封面同步不连接生产 MariaDB，下载完成后通过 `export-mapping` 导出；先复制图片到正式服务器，再运行 PHP `import-mapping` 更新 `cover_cache`。
+离线 Python 封面同步不连接 MariaDB，下载完成后通过 `export-mapping` 导出；确认图片已写入 NAS 共享目录后，在 Windows 维护机上运行 PHP `import-mapping` 连接 NAS MariaDB 更新 `cover_cache`。
 
 运行数据在非公开目录 `var/cover-sync/`，正式图片在 `covers/subjects/`，文件名保留 Bangumi `images.large` URL 的安全 basename，例如 `covers/subjects/000/001/1234_Ewjo.jpg`。正式服务器必须同时部署/同步 `covers/subjects/`、确保本地存在 `covers/logo.png`，并导入最新 `cover_cache.local_path` 映射；单独的 `var/cover-sync/covers.sqlite` 可只保留在维护机器。详见 `docs/bangumi_cover_sync.md`。
 

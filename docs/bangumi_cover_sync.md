@@ -115,13 +115,13 @@ python tools/download_covers.py verify-files
 python tools/download_covers.py export-mapping --file=var/cover-sync/reports/cover-mapping.jsonl
 ```
 
-部署顺序必须是先复制 `covers/subjects/` 文件到 NAS/正式服务器，再导入映射：
+部署顺序必须是先确认 `covers/subjects/` 文件已经写入 NAS 共享目录，再由 Windows PHP 连接 NAS MariaDB 导入映射：
 
 ```bash
 php bin/bangumi_covers.php import-mapping --file=var/cover-sync/reports/cover-mapping.jsonl
 ```
 
-NAS/PHP 只验证 JSONL、本地封面并事务导入 MariaDB `cover_cache`；联网同步、文件验证和映射导出都由 Python 同步器完成。常用开发限制参数：`--max-pages=1`、`--max-items=1`、`--verbose`。默认 `--download-delay=1`、`--api-delay=1`，Python 同步器保持串行保守下载。
+Windows PHP 只验证 JSONL、NAS 共享中的本地封面并事务导入 NAS MariaDB `cover_cache`；联网同步、文件验证和映射导出都由 Python 同步器完成。常用开发限制参数：`--max-pages=1`、`--max-items=1`、`--verbose`。默认 `--download-delay=1`、`--api-delay=1`，Python 同步器保持串行保守下载。
 
 ## 图片验证与安全替换
 
@@ -155,7 +155,7 @@ var/cover-sync/covers.sqlite
 
 ## 映射导出和正式部署
 
-下载机器和正式服务器可能不是同一台机器。默认离线同步只写 SQLite 清单并把新下载记录保留为 `pending_deploy`，不要求也不强制连接生产 MariaDB；完成离线同步后，先运行 `python tools/download_covers.py export-mapping --file=var/cover-sync/reports/cover-mapping.jsonl` 导出映射，再复制 `covers/subjects/` 中新增/更新的文件到正式服务器，并在正式服务器运行 `php bin/bangumi_covers.php import-mapping --file=cover-mapping.jsonl` 导入 `cover_cache`。不能只复制图片而不复制数据库映射；网页只根据 `cover_cache.local_path` 显示封面，网页本身永远不访问 Bangumi。确认网页使用新路径后，最后再清理不再被映射引用的旧文件。
+下载机器和正式服务器可能不是同一台机器。默认离线同步只写 SQLite 清单并把新下载记录保留为 `pending_deploy`；完成离线同步后，先运行 `python tools/download_covers.py export-mapping --file=var/cover-sync/reports/cover-mapping.jsonl` 导出映射，再确认 `covers/subjects/` 中新增/更新的文件已经写入 NAS 共享目录，并在 Windows 维护机上运行 `php bin/bangumi_covers.php import-mapping --file=cover-mapping.jsonl` 连接 NAS MariaDB 导入 `cover_cache`。不能只复制图片而不复制数据库映射；网页只根据 `cover_cache.local_path` 显示封面，网页本身永远不访问 Bangumi。确认网页使用新路径后，最后再清理不再被映射引用的旧文件。
 
 
 ### 封面清理安全规则
@@ -164,7 +164,7 @@ var/cover-sync/covers.sqlite
 
 ## Windows Python + VPN + NAS SMB 部署
 
-最终部署结构是：PHP 网站运行在 NAS 上，只读取 MariaDB/本地 `covers/`；Bangumi 联网同步在开启 VPN 的 Windows 上执行 `python tools/download_covers.py`。`CHRONOSHELTER_COVERS_DIR` 可以指向 NAS 的 UNC/SMB 共享路径（例如 `\\NAS-SHARE\Web\chronoshelter-pr6-runtime\covers`），`CHRONOSHELTER_COVER_SYNC_STATE_DIR` 可以指向同一共享中的非公开状态目录。同步器只写 SQLite 状态、封面文件和 JSONL 映射，不连接生产 MariaDB；NAS 上只运行 `php bin/bangumi_covers.php import-mapping --file=...` 事务导入映射。
+最终部署结构是：NAS 只提供 SMB/UNC 共享目录、MariaDB 和网页服务；Bangumi 联网同步在开启 VPN 的 Windows 上执行 `python tools/download_covers.py`；导入映射也在 Windows 上执行 PHP，并连接 NAS MariaDB。`CHRONOSHELTER_COVERS_DIR` 可以指向 NAS 的 UNC/SMB 共享路径（例如 `\\NAS-SHARE\Web\chronoshelter-pr6-runtime\covers`），`CHRONOSHELTER_COVER_SYNC_STATE_DIR` 可以指向同一共享中的非公开状态目录。Python 同步器只写 SQLite 状态、封面文件和 JSONL 映射，不连接 MariaDB。
 
 Windows PowerShell 小规模隔离测试（不设置 Token，只扫描一页、最多下载一张、使用全新 NAS 测试目录、不连接或修改生产 MariaDB）：
 

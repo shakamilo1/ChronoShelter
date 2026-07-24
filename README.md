@@ -336,7 +336,7 @@ CHRONOSHELTER_AUTH_PASSWORD_HASH='password_hash 输出值'
 
 ## 封面批量下载工具
 
-网页浏览不会联网补齐封面。正式架构是：NAS/PHP 只读取 MariaDB `cover_cache.local_path` 和本地 `covers/`；开启 VPN 的 Windows 维护机运行 Python 同步器并可直接写入 NAS SMB/UNC 共享目录。Python 同步器固定只扫描 Bangumi `type=2` 动画，使用官方 `GET /v0/subjects?type=2&limit=50&offset=...` 批量接口，只读取 `images.large`。
+网页浏览不会联网补齐封面。正式架构是：NAS 只提供共享目录、MariaDB 和网页服务；开启 VPN 的 Windows 维护机运行 Python 同步器并可直接写入 NAS SMB/UNC 共享目录，随后 Windows PHP 连接 NAS MariaDB 执行 `import-mapping`。Python 同步器固定只扫描 Bangumi `type=2` 动画，使用官方 `GET /v0/subjects?type=2&limit=50&offset=...` 批量接口，只读取 `images.large`。对标准 Bangumi `images.large` 文件名，优先将 API URL basename 与 SQLite 中保存的 `remote_filename` 比较；文件名相同且本地文件完整时跳过下载，文件名变化时下载新版，只有异常或不可识别 basename 才退回完整 URL 比较。
 
 安装 Python 依赖：
 
@@ -363,13 +363,13 @@ python tools/download_covers.py verify-files
 python tools/download_covers.py export-mapping --file=var/cover-sync/reports/cover-mapping.jsonl
 ```
 
-把 `covers/subjects/` 中新增或更新的文件复制到 NAS/正式服务器后，再在 NAS 上导入映射：
+确认 `covers/subjects/` 中新增或更新的文件已经写入 NAS 共享目录后，在 Windows 维护机上用 PHP 连接 NAS MariaDB 导入映射：
 
 ```bash
 php bin/bangumi_covers.php import-mapping --file=var/cover-sync/reports/cover-mapping.jsonl
 ```
 
-`BANGUMI_ACCESS_TOKEN` 可选且只会发送给严格匹配的 `https://api.bgm.tv:443` API JSON 请求；图片请求和每一跳重定向都不会携带 Authorization。可用 `CHRONOSHELTER_COVERS_DIR`、`CHRONOSHELTER_COVER_SYNC_STATE_DIR` 指向 NAS 共享目录，并用 `--proxy` 或 `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` 配置代理。NAS/PHP 不负责联网下载，不需要修改 Windows `php.ini`。完整说明见 [`docs/bangumi_cover_sync.md`](docs/bangumi_cover_sync.md)。
+`BANGUMI_ACCESS_TOKEN` 可选且只会发送给严格匹配的 `https://api.bgm.tv:443` API JSON 请求；图片请求和每一跳重定向都不会携带 Authorization。可用 `CHRONOSHELTER_COVERS_DIR`、`CHRONOSHELTER_COVER_SYNC_STATE_DIR` 指向 NAS 共享目录，并用 `--proxy` 或 `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` 配置代理。NAS 不负责联网下载；Windows Python 负责下载/验证/导出，Windows PHP 负责连接 NAS MariaDB 执行 `import-mapping`。完整说明见 [`docs/bangumi_cover_sync.md`](docs/bangumi_cover_sync.md)。
 
 ### 封面清理安全规则
 
@@ -377,7 +377,7 @@ php bin/bangumi_covers.php import-mapping --file=var/cover-sync/reports/cover-ma
 
 ### Windows Python 封面同步
 
-正式架构为 NAS/PHP 只读本地封面和数据库，Windows 维护机在 VPN 下运行 `python tools/download_covers.py`。可用 `CHRONOSHELTER_COVERS_DIR` 指向 NAS SMB/UNC 封面目录，`CHRONOSHELTER_COVER_SYNC_STATE_DIR` 指向 NAS 上的非公开同步状态目录；同步器不会连接生产 MariaDB。常用命令：
+正式架构为 NAS 只提供共享目录、MariaDB 和网页服务；Windows 维护机在 VPN 下运行 `python tools/download_covers.py` 下载/验证/导出，并使用 Windows PHP 连接 NAS MariaDB 执行导入。可用 `CHRONOSHELTER_COVERS_DIR` 指向 NAS SMB/UNC 封面目录，`CHRONOSHELTER_COVER_SYNC_STATE_DIR` 指向 NAS 共享中的非公开同步状态目录；Python 同步器不会连接 MariaDB。常用命令：
 
 ```powershell
 python tools/download_covers.py sync --resume
@@ -385,4 +385,4 @@ python tools/download_covers.py verify-files
 python tools/download_covers.py export-mapping --file var/cover-sync/reports/cover-mapping.jsonl
 ```
 
-随后在 NAS 上复制/确认封面文件已存在，再运行 `php bin/bangumi_covers.php import-mapping --file=var/cover-sync/reports/cover-mapping.jsonl`。默认命令不带代理；只有确实使用本地 HTTP 代理时才添加 `--proxy <代理地址>`，也可使用 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 环境变量。
+随后确认封面文件已经写入 NAS 共享目录，再在 Windows 维护机上运行 `php bin/bangumi_covers.php import-mapping --file=var/cover-sync/reports/cover-mapping.jsonl`，由 Windows PHP 连接 NAS MariaDB 写入映射。默认命令不带代理；只有确实使用本地 HTTP 代理时才添加 `--proxy <代理地址>`，也可使用 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 环境变量。

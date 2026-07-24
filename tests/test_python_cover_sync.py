@@ -146,6 +146,51 @@ def test_python_sync_rejects_no_icon_and_exports_mapping(monkeypatch, tmp_path):
     assert rows[1]["status"] == "no_cover"
 
 
+def test_python_sync_compares_standard_remote_filename_before_full_url(monkeypatch, tmp_path):
+    enable_fake_pillow(monkeypatch)
+    covers, _state = configure_paths(monkeypatch, tmp_path)
+    body = png_bytes()
+    relative = Path("subjects/000/491/491569_ok.png")
+    cover = covers / relative
+    cover.parent.mkdir(parents=True, exist_ok=True)
+    cover.write_bytes(body)
+    con = dl.connect_db()
+    con.execute(
+        "INSERT INTO cover_manifest(subject_id, subject_type, downloaded_url, observed_url, remote_filename, relative_path, mime_type, file_extension, file_size, sha256, artifact_status, deploy_status, last_check_result) VALUES (491569,2,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "https://lain.bgm.tv/old/path/491569_ok.png?old=1",
+            "https://lain.bgm.tv/old/path/491569_ok.png?old=1",
+            "491569_ok.png",
+            relative.as_posix(),
+            "image/png",
+            "png",
+            len(body),
+            dl.sha256(body).hexdigest(),
+            "available",
+            "pending_deploy",
+            "updated",
+        ),
+    )
+    con.commit(); con.close()
+
+    def fake_request(url, headers, proxy, timeout, *args, **kwargs):
+        page = {"total": 1, "limit": 50, "offset": 0, "data": [{"id": 491569, "type": 2, "images": {"large": "https://lain.bgm.tv/new/path/491569_ok.png?new=1"}}]}
+        return 200, {"content-type": "application/json"}, json.dumps(page).encode()
+
+    def unexpected_download(*_args, **_kwargs):
+        raise AssertionError("same remote_filename with valid local file should skip download")
+
+    monkeypatch.setattr(dl, "request_once", fake_request)
+    monkeypatch.setattr(dl, "download_image", unexpected_download)
+    monkeypatch.setattr(dl.time, "sleep", lambda _seconds: None)
+    rc = dl.sync(dl.build_parser().parse_args(["sync", "--max-pages=1", "--api-delay=0", "--download-delay=0"]))
+    assert rc == 0
+    row = dl.connect_db().execute("SELECT last_check_result, observed_url, downloaded_url FROM cover_manifest WHERE subject_id=491569").fetchone()
+    assert row["last_check_result"] == "unchanged"
+    assert row["observed_url"] == "https://lain.bgm.tv/new/path/491569_ok.png?new=1"
+    assert row["downloaded_url"] == "https://lain.bgm.tv/old/path/491569_ok.png?old=1"
+
+
 def test_python_redirect_rejects_https_downgrade_and_token_never_sent(monkeypatch, tmp_path):
     configure_paths(monkeypatch, tmp_path)
     seen_headers = []

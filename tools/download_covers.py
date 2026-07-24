@@ -219,6 +219,18 @@ def safe_remote_filename(subject_id: int, url: str, detected_ext: str) -> str:
     return f"{subject_id}_{sha256(url.encode('utf-8')).hexdigest()[:12]}.{detected_ext}"
 
 
+def observed_remote_filename(subject_id: int, url: str) -> str | None:
+    """Return the standard Bangumi images.large basename when it is safe and recognizable."""
+    path = urllib.parse.urlparse(url).path
+    basename = urllib.parse.unquote(PurePosixPath(path).name)
+    if any(ch in basename for ch in ("/", "\\")) or ".." in basename or any(ord(ch) < 32 or ord(ch) == 127 for ch in basename):
+        return None
+    match = re.match(FILENAME_RE_TEMPLATE.format(sid=re.escape(str(subject_id))), basename, re.I)
+    if not match:
+        return None
+    return basename
+
+
 def cover_relative_path(subject_id: int, filename: str) -> PurePosixPath:
     if not re.match(rf"^{subject_id}_[A-Za-z0-9_-]+(?:--[a-f0-9]{{12}}|--[a-f0-9]{{64}})?\.(jpg|jpeg|png|webp)$", filename, re.I):
         raise CoverSyncError("invalid cover filename")
@@ -736,7 +748,9 @@ def sync(args: argparse.Namespace) -> int:
                 stats["processed"] = processed
                 continue
             old = con.execute("SELECT * FROM cover_manifest WHERE subject_id=?", (subject_id,)).fetchone()
-            if old and old["downloaded_url"] == url and manifest_file_valid(old):
+            observed_name = observed_remote_filename(subject_id, url)
+            same_remote = bool(old) and ((observed_name is not None and old["remote_filename"] == observed_name) or (observed_name is None and old["downloaded_url"] == url))
+            if old and same_remote and manifest_file_valid(old):
                 con.execute("UPDATE cover_manifest SET observed_url=?, artifact_status='available', last_check_result='unchanged', last_error=NULL, checked_at=? WHERE subject_id=?", (url, now(), subject_id))
                 con.commit()
                 stats["unchanged"] += 1
