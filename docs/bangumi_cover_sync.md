@@ -170,21 +170,22 @@ Windows PowerShell 小规模隔离测试（不设置 Token，只扫描一页、�
 
 ```powershell
 Remove-Item Env:BANGUMI_ACCESS_TOKEN -ErrorAction SilentlyContinue
-$env:CHRONOSHELTER_COVERS_DIR='\\NAS-SHARE\Web\chronoshelter-pr6-runtime\covers'
-$env:CHRONOSHELTER_COVER_SYNC_STATE_DIR='\\NAS-SHARE\Web\chronoshelter-pr6-runtime\var\cover-sync'
+$ProjectRoot = Convert-Path '\\NAS-SHARE\Web\chronoshelter-pr6-runtime'
+$env:CHRONOSHELTER_COVERS_DIR = Join-Path $ProjectRoot 'covers'
+$env:CHRONOSHELTER_COVER_SYNC_STATE_DIR = Join-Path $ProjectRoot 'var\cover-sync'
 python tools/download_covers.py sync --max-pages=1 --max-items=1 --api-delay=0 --download-delay=0 --verbose
 # 确认最终统计中 downloaded=1；如果不是 1，不要继续正式同步或导入。
 python tools/download_covers.py verify-files
-python tools/download_covers.py export-mapping --file '\\NAS-SHARE\Web\chronoshelter-pr6-runtime\var\cover-sync\reports\cover-mapping-test.jsonl'
+python tools/download_covers.py export-mapping --file (Join-Path $env:CHRONOSHELTER_COVER_SYNC_STATE_DIR 'reports\cover-mapping-test.jsonl')
 ```
 
-NAS 侧导入命令：
+Windows 上执行 PHP 导入时同样在项目目录运行，不需要 SSH 到 NAS，也不要让 NAS 访问 Bangumi。Windows PHP 可能需要显式启用 `fileinfo`、`gd`、`pdo_mysql`；连接 NAS MariaDB 时数据库 host 不能写 `localhost`，应使用 NAS 的局域网地址或由环境/配置提供。PowerShell 多行续行请使用反引号（`` ` ``），不要使用 Linux shell 的反斜杠。
 
-```bash
-php bin/bangumi_covers.php import-mapping --file=var/cover-sync/reports/cover-mapping-test.jsonl
+```powershell
+php bin/bangumi_covers.php import-mapping --file (Join-Path $env:CHRONOSHELTER_COVER_SYNC_STATE_DIR 'reports\cover-mapping-test.jsonl')
 ```
 
-无需修改 Windows `php.ini`；联网、证书和代理由 Windows Python 进程负责。标准 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 环境变量会被 Python 标准库代理处理；显式 `--proxy` 会覆盖本次同步使用的 HTTP/HTTPS 代理。
+联网、证书和代理由 Windows Python 进程负责。标准 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 环境变量会被 Python 标准库代理处理；显式 `--proxy` 会覆盖本次同步使用的 HTTP/HTTPS 代理。
 
 ## 未来集成边界
 

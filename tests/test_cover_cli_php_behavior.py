@@ -148,3 +148,63 @@ def test_php_import_validator_rejects_parent_symlink(tmp_path):
     proc = run_php(php, {"CHRONOSHELTER_COVERS_DIR": str(covers)})
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["error"] is not None
+
+
+def test_php_cover_sync_uses_project_db_library_function():
+    source = (ROOT / "bin" / "bangumi_covers.php").read_text(encoding="utf-8")
+    assert "db_library()" in source
+    assert "return library_db()" not in source
+
+
+def test_php_import_mapping_upserts_real_jsonl_fields(tmp_path):
+    covers = tmp_path / "covers"
+    mapping = tmp_path / "mapping.jsonl"
+    php = textwrap.dedent(f"""
+    <?php
+    require {json.dumps(str(ROOT / 'bin' / 'bangumi_covers.php'))};
+    final class CapturingStatement {{
+        public function __construct(private CapturingDb $db) {{}}
+        public function execute($params = null): bool {{
+            $this->db->rows[(int)$params['subject_id']] = $params;
+            $this->db->executeCalls++;
+            return true;
+        }}
+    }}
+    final class CapturingDb {{
+        public array $rows = []; public int $executeCalls = 0; public int $beginCalls = 0; public int $commitCalls = 0; public int $rollbackCalls = 0;
+        public function beginTransaction(): bool {{ $this->beginCalls++; return true; }}
+        public function commit(): bool {{ $this->commitCalls++; return true; }}
+        public function rollBack(): bool {{ $this->rollbackCalls++; return true; }}
+        public function prepare(string $sql): CapturingStatement {{ return new CapturingStatement($this); }}
+    }}
+    ensure_runtime_dirs();
+    $im = imagecreatetruecolor(1, 1); ob_start(); imagepng($im); $png = ob_get_clean();
+    $name = '9001_ok.png'; $relative = cover_relative_path(9001, $name); $absolute = cover_absolute_path($relative);
+    if (!is_dir(dirname($absolute))) {{ mkdir(dirname($absolute), 0775, true); }}
+    file_put_contents($absolute, $png); $meta = validate_image_file($absolute, 'image/png');
+    $row = ['subject_id' => 9001, 'status' => 'cached', 'remote_filename' => $name, 'source_url' => 'https://lain.bgm.tv/pic/cover/l/a/b/' . $name, 'local_path' => $relative, 'content_type' => $meta['mime_type'], 'file_size' => $meta['file_size'], 'sha256' => $meta['sha256'], 'updated_at' => '2026-07-24 00:00:00'];
+    file_put_contents({json.dumps(str(mapping))}, json_encode($row, JSON_UNESCAPED_SLASHES) . "\n");
+    $db = new CapturingDb(); $GLOBALS['cover_sync_library_db'] = $db;
+    $first = import_mapping(['file' => {json.dumps(str(mapping))}]);
+    $row['source_url'] = 'https://lain.bgm.tv/pic/cover/l/a/b/' . $name . '?v=2';
+    file_put_contents({json.dumps(str(mapping))}, json_encode($row, JSON_UNESCAPED_SLASHES) . "\n");
+    $second = import_mapping(['file' => {json.dumps(str(mapping))}]);
+    echo json_encode(['first' => $first['update_success'], 'second' => $second['update_success'], 'executeCalls' => $db->executeCalls, 'rowCount' => count($db->rows), 'row' => $db->rows[9001], 'commits' => $db->commitCalls], JSON_UNESCAPED_SLASHES);
+    ?>
+    """)
+    proc = run_php(php, {"CHRONOSHELTER_COVERS_DIR": str(covers)})
+    assert proc.returncode == 0, proc.stderr
+    data = json.loads(proc.stdout)
+    assert data["first"] == 1
+    assert data["second"] == 1
+    assert data["executeCalls"] == 2
+    assert data["rowCount"] == 1
+    row = data["row"]
+    for key in ["subject_id", "status", "remote_filename", "source_url", "local_path", "content_type", "file_size", "sha256", "updated_at"]:
+        assert key in row
+    assert row["subject_id"] == 9001
+    assert row["status"] == "cached"
+    assert row["remote_filename"] == "9001_ok.png"
+    assert row["local_path"] == "subjects/000/009/9001_ok.png"
+    assert row["source_url"].endswith("?v=2")
+    assert data["commits"] == 2

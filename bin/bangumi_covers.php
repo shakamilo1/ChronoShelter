@@ -192,7 +192,7 @@ function import_mapping_row_is_safe(array $row): array
 function cover_sync_library_db(): object
 {
     if (isset($GLOBALS['cover_sync_library_db'])) return $GLOBALS['cover_sync_library_db'];
-    if (function_exists('library_db')) return library_db();
+    if (function_exists('db_library')) return db_library();
     throw new RuntimeException('library database is not configured');
 }
 
