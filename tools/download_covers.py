@@ -567,20 +567,21 @@ class FileLock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.handle = self.path.open("a+b")
         try:
+            if self.path.stat().st_size == 0:
+                # Windows msvcrt locks byte ranges; seed byte 0 before locking it.
+                self.handle.write(b"0")
+                self.handle.flush()
+                os.fsync(self.handle.fileno())
+            self.handle.seek(0)
             if os.name == "nt":
                 import msvcrt
-                self.handle.seek(0)
-                if self.handle.read(1) == b"":
-                    self.handle.write(b"0")
-                    self.handle.flush()
-                self.handle.seek(0)
                 msvcrt.locking(self.handle.fileno(), msvcrt.LK_NBLCK, 1)
             else:
                 import fcntl
                 fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            self.handle.seek(0)
-            self.handle.truncate()
-            self.handle.write(json.dumps({"pid": os.getpid(), "created_at": time.time(), "tool": "ChronoShelter Python cover sync"}).encode("utf-8"))
+            # Do not truncate or rewrite byte 0 after acquiring the lock. Metadata is advisory only.
+            self.handle.seek(1)
+            self.handle.write(("\n" + json.dumps({"pid": os.getpid(), "created_at": time.time(), "tool": "ChronoShelter Python cover sync"}) + "\n").encode("utf-8"))
             self.handle.flush()
             os.fsync(self.handle.fileno())
             return self
