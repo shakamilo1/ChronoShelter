@@ -210,3 +210,94 @@ def test_python_unc_style_paths_are_accepted(monkeypatch):
     monkeypatch.setenv("CHRONOSHELTER_COVERS_DIR", unc_like)
     assert "AS6604T-BA68" in str(dl.covers_dir())
     assert dl.partition_prefix(1234567).as_posix() == "subjects/001/234"
+
+
+def test_python_old_php_sqlite_schema_is_rejected(monkeypatch, tmp_path):
+    configure_paths(monkeypatch, tmp_path)
+    db = tmp_path / "nas share" / "state" / "covers.sqlite"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    import sqlite3
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE cover_manifest (subject_id INTEGER PRIMARY KEY, status TEXT)")
+    con.commit(); con.close()
+    try:
+        dl.connect_db()
+    except dl.CoverSyncError as exc:
+        assert "incompatible existing covers.sqlite schema" in str(exc)
+    else:
+        raise AssertionError("old incompatible PHP sqlite schema was accepted")
+
+
+def test_python_atomic_commit_rename_failure_cleans_part(monkeypatch, tmp_path):
+    enable_fake_pillow(monkeypatch)
+    covers, _state = configure_paths(monkeypatch, tmp_path)
+    body = png_bytes()
+    dl.ensure_dirs()
+    tmp = dl.shard_dir(491569) / ".491569-test.part"
+    tmp.write_bytes(body)
+    meta = dl.DownloadMeta(tmp, "https://lain.bgm.tv/pic/cover/l/a/b/491569_atomic.png", "image/png", "png", len(body), dl.sha256(body).hexdigest())
+    def fail_rename(src, dst):
+        raise OSError("simulated SMB rename failure")
+    monkeypatch.setattr(dl.os, "rename", fail_rename)
+    try:
+        dl.place_cover(491569, meta.final_url, meta)
+    except OSError as exc:
+        assert "simulated SMB rename failure" in str(exc)
+    else:
+        raise AssertionError("rename failure was accepted")
+    assert_no_parts(tmp_path)
+    assert not (covers / "subjects" / "000" / "491" / "491569_atomic.png").exists()
+
+
+def test_python_target_symlink_and_parent_symlink_are_rejected(monkeypatch, tmp_path):
+    covers, _state = configure_paths(monkeypatch, tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    subjects = covers / "subjects"
+    covers.mkdir(parents=True)
+    subjects.symlink_to(outside, target_is_directory=True)
+    try:
+        dl.shard_dir(491569)
+    except dl.CoverSyncError:
+        pass
+    else:
+        raise AssertionError("subjects symlink was accepted")
+    subjects.unlink()
+    shard = covers / "subjects" / "000" / "491"
+    shard.mkdir(parents=True)
+    target = shard / "491569_link.png"
+    target.symlink_to(outside / "escape.png")
+    body = png_bytes()
+    tmp = shard / ".491569-link.part"
+    tmp.write_bytes(body)
+    meta = dl.DownloadMeta(tmp, "https://lain.bgm.tv/pic/cover/l/a/b/491569_link.png", "image/png", "png", len(body), dl.sha256(body).hexdigest())
+    try:
+        dl.place_cover(491569, meta.final_url, meta)
+    except dl.CoverSyncError:
+        pass
+    else:
+        raise AssertionError("target symlink was accepted")
+    tmp.unlink(missing_ok=True)
+
+
+def test_python_stream_total_timeout_cleans_part(monkeypatch, tmp_path):
+    configure_paths(monkeypatch, tmp_path)
+    times = iter([0.0, 10.0])
+    monkeypatch.setattr(dl.time, "monotonic", lambda: next(times, 10.0))
+    class FakeResp:
+        status = 200
+        headers = {"content-type": "image/png"}
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self, _n): return b"x" * 10
+    class FakeOpener:
+        def open(self, _req, timeout): return FakeResp()
+    monkeypatch.setattr(dl, "opener", lambda proxy: FakeOpener())
+    tmp = tmp_path / "slow.part"
+    try:
+        dl.stream_once_to_tmp("https://images.example/slow.png", {}, None, 1, tmp, total_timeout=1)
+    except dl.CoverSyncError as exc:
+        assert "total timeout" in str(exc)
+    else:
+        raise AssertionError("slow stream was accepted")
+    assert not tmp.exists()

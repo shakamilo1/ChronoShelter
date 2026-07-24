@@ -11,6 +11,11 @@ const STATUSES = ['pending', 'downloading', 'downloaded', 'unchanged', 'pending_
 
 class RemoteMissingCover extends RuntimeException {}
 
+function php_cover_sync_disabled(): void
+{
+    throw new RuntimeException('PHP cover sync/verify/export/cleanup is disabled on NAS; use Python for sync/verify/export and PHP only for import-mapping');
+}
+
 $root = dirname(__DIR__);
 require_once $root . '/includes/database.php';
 
@@ -368,6 +373,7 @@ function http_request_follow_image_redirects(string $url, array $conditionalHead
 
 function fetch_subject_page(int $offset): array
 {
+    php_cover_sync_disabled();
     if ($offset < 0) {
         throw new InvalidArgumentException('Bangumi API offset must be non-negative');
     }
@@ -532,6 +538,7 @@ function validate_image_file(string $path, string $contentType): array
 
 function download_image_to_tmp(int $subjectId, string $url, array $conditionalHeaders = []): array
 {
+    php_cover_sync_disabled();
     $baseTmp = tempnam(cover_sync_paths()['tmp'], $subjectId . '-');
     if ($baseTmp === false) {
         throw new RuntimeException('cannot create temp image file');
@@ -910,6 +917,7 @@ function write_report(array $stats, array $changes): void
 
 function apply_updates(array $options): array
 {
+    php_cover_sync_disabled();
     $stats = stats_template('apply-updates');
     $sql = "SELECT subject_id FROM cover_manifest WHERE subject_type = 2 AND status IN ('pending','pending_update') AND observed_url IS NOT NULL ORDER BY subject_id";
     if ($options['subject-id']) $sql = 'SELECT subject_id FROM cover_manifest WHERE subject_id = ' . (int) $options['subject-id'] . " AND subject_type = 2";
@@ -926,6 +934,7 @@ function apply_updates(array $options): array
 
 function retry_failed(array $options): array
 {
+    php_cover_sync_disabled();
     db()->exec("UPDATE cover_manifest SET status = CASE WHEN downloaded_url IS NULL THEN 'pending' ELSE 'pending_update' END WHERE subject_type = 2 AND status IN ('failed','mapping_failed')");
     return apply_updates($options);
 }
@@ -953,6 +962,7 @@ function strict_manifest_cover_ok(array $row, ?string &$error = null): bool
 
 function verify_files(array $options): array
 {
+    php_cover_sync_disabled();
     $stats = stats_template('verify-files');
     $hadFailure = false;
     $rows = db()->query("SELECT subject_id, relative_path, mime_type, file_extension, file_size, sha256 FROM cover_manifest WHERE subject_type = 2 AND relative_path IS NOT NULL")->fetchAll(PDO::FETCH_ASSOC);
@@ -981,6 +991,7 @@ function verify_files(array $options): array
 
 function deep_check(array $options): array
 {
+    php_cover_sync_disabled();
     $stats = stats_template('deep-check');
     if ($options['all'] && !$options['confirm-all']) {
         fwrite(STDERR, "Refusing --all without --confirm-all\n");
@@ -1057,6 +1068,7 @@ function deep_check(array $options): array
 
 function export_mapping(array $options): array
 {
+    php_cover_sync_disabled();
     $stats = stats_template('export-mapping');
     $file = $options['file'] ?: (cover_sync_paths()['reports'] . '/cover-mapping-' . gmdate('Y-m-d-His') . '.jsonl');
     $dir = dirname((string) $file);
@@ -1237,6 +1249,7 @@ function import_mapping(array $options): array
 
 function cleanup_covers(array $options): array
 {
+    php_cover_sync_disabled();
     if ((bool) $options['apply']) {
         fwrite(STDERR, "cleanup-covers --apply is disabled until production cover_cache references or a trusted active mapping snapshot can be verified.\n");
         exit(2);

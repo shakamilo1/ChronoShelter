@@ -13,7 +13,6 @@ import json
 import os
 import random
 import re
-import shutil
 import sqlite3
 import ssl
 import sys
@@ -43,6 +42,9 @@ ALLOWED_MIME = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
 FILENAME_RE_TEMPLATE = r"^{sid}_[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$"
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 CHUNK_SIZE = 128 * 1024
+API_TOTAL_TIMEOUT = 60.0
+IMAGE_TOTAL_TIMEOUT = 120.0
+REQUIRED_MANIFEST_COLUMNS = {"subject_id", "subject_type", "downloaded_url", "observed_url", "remote_filename", "relative_path", "mime_type", "file_extension", "file_size", "sha256", "etag", "last_modified", "artifact_status", "deploy_status", "last_check_result", "last_error", "checked_at", "last_success_at", "retry_count"}
 
 
 class CoverSyncError(RuntimeError):
@@ -86,9 +88,17 @@ def sqlite_path() -> Path:
 
 
 def ensure_dirs() -> None:
-    for path in (state_dir(), tmp_dir(), reports_dir(), covers_dir()):
+    for path in (state_dir(), tmp_dir(), reports_dir()):
         path.mkdir(parents=True, exist_ok=True)
+    ensure_cover_root()
     cleanup_stale_parts()
+
+
+def ensure_cover_root() -> None:
+    root = covers_dir()
+    if root.is_symlink():
+        raise CoverSyncError("covers root must not be a symlink")
+    root.mkdir(parents=True, exist_ok=True)
 
 
 def cleanup_stale_parts() -> None:
@@ -111,6 +121,12 @@ def connect_db() -> sqlite3.Connection:
     ensure_dirs()
     con = sqlite3.connect(sqlite_path())
     con.row_factory = sqlite3.Row
+    existing = con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='cover_manifest'").fetchone()
+    if existing:
+        columns = {row[1] for row in con.execute("PRAGMA table_info(cover_manifest)")}
+        missing = REQUIRED_MANIFEST_COLUMNS - columns
+        if missing:
+            raise CoverSyncError("incompatible existing covers.sqlite schema; back it up and set CHRONOSHELTER_COVER_SYNC_STATE_DIR to a fresh directory")
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS cover_manifest (
@@ -191,10 +207,31 @@ def ensure_under(root: Path, path: Path) -> None:
         raise CoverSyncError("path escapes covers root")
 
 
+def ensure_safe_existing_components(path: Path) -> None:
+    root = covers_dir().resolve()
+    current = covers_dir()
+    if current.is_symlink():
+        raise CoverSyncError("covers root must not be a symlink")
+    rel_parts = path.relative_to(covers_dir()).parts
+    for part in rel_parts:
+        current = current / part
+        if current.is_symlink():
+            raise CoverSyncError("cover path component must not be a symlink")
+        if current.exists():
+            ensure_under(covers_dir(), current)
+
+
 def shard_dir(subject_id: int) -> Path:
     directory = cover_absolute_path(partition_prefix(subject_id))
-    directory.mkdir(parents=True, exist_ok=True)
-    ensure_under(covers_dir(), directory)
+    ensure_safe_existing_components(directory)
+    current = covers_dir()
+    for part in directory.relative_to(covers_dir()).parts:
+        current = current / part
+        if current.is_symlink():
+            raise CoverSyncError("cover shard component must not be a symlink")
+        if not current.exists():
+            current.mkdir()
+        ensure_under(covers_dir(), current)
     return directory
 
 
@@ -252,12 +289,15 @@ def request_once(url: str, headers: dict[str, str], proxy: str | None, timeout: 
         raise CoverSyncError(f"network error: {exc.reason}") from exc
 
 
-def stream_once_to_tmp(url: str, headers: dict[str, str], proxy: str | None, timeout: float, tmp: Path, max_bytes: int = MAX_IMAGE_BYTES) -> tuple[int, dict[str, str], int]:
+def stream_once_to_tmp(url: str, headers: dict[str, str], proxy: str | None, timeout: float, tmp: Path, max_bytes: int = MAX_IMAGE_BYTES, total_timeout: float = IMAGE_TOTAL_TIMEOUT) -> tuple[int, dict[str, str], int]:
     req = urllib.request.Request(url, headers=headers, method="GET")
     total = 0
+    deadline = time.monotonic() + total_timeout
     try:
         with opener(proxy).open(req, timeout=timeout) as resp, tmp.open("wb") as out:
             while True:
+                if time.monotonic() > deadline:
+                    raise CoverSyncError("image download exceeded total timeout")
                 chunk = resp.read(CHUNK_SIZE)
                 if not chunk:
                     break
@@ -285,9 +325,12 @@ def sleep_for_retry(headers: dict[str, str], attempt: int) -> None:
     time.sleep(delay)
 
 
-def http_get(url: str, headers: dict[str, str], proxy: str | None, timeout: float, retries: int = 3) -> tuple[int, dict[str, str], bytes]:
+def http_get(url: str, headers: dict[str, str], proxy: str | None, timeout: float, retries: int = 3, total_timeout: float = API_TOTAL_TIMEOUT) -> tuple[int, dict[str, str], bytes]:
+    deadline = time.monotonic() + total_timeout
     for attempt in range(1, retries + 1):
-        status, response_headers, body = request_once(url, headers, proxy, timeout)
+        if time.monotonic() > deadline:
+            raise CoverSyncError("API request exceeded total timeout")
+        status, response_headers, body = request_once(url, headers, proxy, min(timeout, max(0.1, deadline - time.monotonic())))
         if not should_retry(status) or attempt == retries:
             return status, response_headers, body
         sleep_for_retry(response_headers, attempt)
@@ -439,8 +482,9 @@ def manifest_file_valid(row: sqlite3.Row) -> bool:
         if not row["relative_path"] or not row["sha256"] or not row["mime_type"] or row["file_size"] is None:
             return False
         path = cover_absolute_path(row["relative_path"])
-        if not path.is_file():
+        if path.is_symlink() or not path.is_file():
             return False
+        ensure_under(covers_dir(), path)
         mime, ext, size, digest = validate_image_file(path, row["mime_type"])
         return mime == row["mime_type"] and ext == row["file_extension"] and size == int(row["file_size"]) and digest == row["sha256"]
     except Exception:
@@ -448,39 +492,36 @@ def manifest_file_valid(row: sqlite3.Row) -> bool:
 
 
 def commit_tmp_no_clobber(tmp: Path, target: Path) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
+    shard_dir(int(target.name.split("_", 1)[0]))
+    ensure_safe_existing_components(target.parent)
     ensure_under(covers_dir(), target.parent)
-    if target.exists():
-        raise FileExistsError(str(target))
+    lock = target.parent / ".chronoshelter-cover-sync.lock"
+    fd: int | None = None
     try:
-        os.link(tmp, target)
-        tmp.unlink()
-        return
-    except FileExistsError:
-        raise
-    except OSError:
-        try:
-            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        if target.is_symlink():
+            raise CoverSyncError("target cover path is a symlink")
+        if target.exists():
+            raise FileExistsError(str(target))
+        os.rename(tmp, target)
+        ensure_under(covers_dir(), target)
+    finally:
+        if fd is not None:
+            os.close(fd)
             try:
-                with os.fdopen(fd, "wb") as dst, tmp.open("rb") as src:
-                    shutil.copyfileobj(src, dst)
-                    dst.flush()
-                    os.fsync(dst.fileno())
-            except Exception:
-                target.unlink(missing_ok=True)
-                raise
-            tmp.unlink()
-        except Exception:
-            if target.exists() and target.stat().st_size == 0:
-                target.unlink(missing_ok=True)
-            raise
+                lock.unlink()
+            except OSError:
+                print(f"WARNING: could not remove lock file: {lock}", file=sys.stderr)
 
 
 def place_cover(subject_id: int, source_url: str, meta: DownloadMeta) -> tuple[str, str]:
     remote = safe_remote_filename(subject_id, source_url, meta.extension)
     rel = cover_relative_path(subject_id, remote)
     target = cover_absolute_path(rel)
+    if target.is_symlink():
+        raise CoverSyncError("target cover path is a symlink")
     if target.exists():
+        ensure_under(covers_dir(), target)
         existing_sha = sha256(target.read_bytes()).hexdigest()
         if existing_sha == meta.sha256:
             meta.tmp_path.unlink(missing_ok=True)
@@ -490,12 +531,19 @@ def place_cover(subject_id: int, source_url: str, meta: DownloadMeta) -> tuple[s
         for size in (12, 64):
             rel = cover_relative_path(subject_id, f"{stem}--{meta.sha256[:size]}.{ext}")
             target = cover_absolute_path(rel)
+            if target.is_symlink():
+                raise CoverSyncError("target cover path is a symlink")
             if not target.exists():
                 break
+            ensure_under(covers_dir(), target)
             if sha256(target.read_bytes()).hexdigest() == meta.sha256:
                 meta.tmp_path.unlink(missing_ok=True)
                 return remote, rel.as_posix()
-    commit_tmp_no_clobber(meta.tmp_path, target)
+    try:
+        commit_tmp_no_clobber(meta.tmp_path, target)
+    except Exception:
+        meta.tmp_path.unlink(missing_ok=True)
+        raise
     return remote, rel.as_posix()
 
 

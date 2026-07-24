@@ -53,8 +53,12 @@ jobs:
       - name: Run Windows Python cover sync tests
         shell: pwsh
         run: pytest -q tests/test_python_cover_sync.py tests/test_image_cache.py
-      - name: PowerShell CLI smoke test
+      - name: PowerShell isolated CLI smoke test
         shell: pwsh
         run: |
-          python tools/download_covers.py --help
+          $env:CHRONOSHELTER_COVERS_DIR = Join-Path $env:RUNNER_TEMP "covers"
+          $env:CHRONOSHELTER_COVER_SYNC_STATE_DIR = Join-Path $env:RUNNER_TEMP "cover-sync"
+          python tools/download_covers.py sync --max-pages=0 --api-delay=0 --download-delay=0 --verbose
+          python tools/download_covers.py verify-files
+          python tools/download_covers.py export-mapping --file (Join-Path $env:RUNNER_TEMP "cover-mapping.jsonl")
           python -m py_compile importer/image_cache.py tools/download_covers.py tools/cache_covers.py

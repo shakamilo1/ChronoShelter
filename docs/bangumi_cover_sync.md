@@ -93,7 +93,7 @@ var/cover-sync/
 └── reports/
 ```
 
-临时下载文件写入 `var/cover-sync/tmp/`，不会写入公开的 `covers/`。测试或隔离运行可用 `CHRONOSHELTER_COVER_SYNC_STATE_DIR` 指向临时状态目录、`CHRONOSHELTER_COVERS_DIR` 指向临时封面根目录；正式部署通常使用配置中的 `covers.directory`。SQLite 记录 `subject_id`、固定的 `subject_type=2`、`downloaded_url`、`observed_url`、`relative_path`、`mime_type`、`file_extension`、`file_size`、`sha256`、`etag`、`last_modified`、状态、时间戳、重试次数和错误信息；同时预留并幂等迁移 `artifact_status`、`deploy_status`、`last_check_result`、`last_error`、`checked_at`、`last_success_at`，用于区分最后成功文件、部署状态和本次远端检查结果。同步进度记录 `run_id`、`run_type`、`next_offset`、`total`、开始/更新时间、完成时间和运行状态。
+下载临时 `.part` 文件写入最终目标所在的 `covers/subjects/{level1}/{level2}/` 分片目录，验证完成前最终文件名不会出现；启动时会清理遗留 `.part`。测试或隔离运行可用 `CHRONOSHELTER_COVER_SYNC_STATE_DIR` 指向临时状态目录、`CHRONOSHELTER_COVERS_DIR` 指向临时封面根目录。SQLite 记录 `subject_id`、固定的 `subject_type=2`、`downloaded_url`、`observed_url`、`remote_filename`、`relative_path`、`mime_type`、`file_extension`、`file_size`、`sha256`、`etag`、`last_modified`、`artifact_status`、`deploy_status`、`last_check_result`、`last_error`、`checked_at`、`last_success_at`、`retry_count`。如果检测到旧 PHP 同步器留下的不兼容 `covers.sqlite`，Python 会立即退出并提示备份后使用新的 `CHRONOSHELTER_COVER_SYNC_STATE_DIR`，不会随机运行到缺列失败。同步进度记录 `run_type`、`next_offset`、`total` 和更新时间。
 
 ## 命令
 
@@ -150,7 +150,7 @@ cp logo.png covers/logo.png
 var/cover-sync/covers.sqlite
 ```
 
-`var/cover-sync/tmp/`、日志、锁文件、失败报告不需要复制到 Web 公开目录。建议用目录级增量同步工具复制新增和修改文件，不要每次重新传输整个封面库。
+`var/cover-sync/` 中的 SQLite、日志、锁文件、失败报告不需要复制到 Web 公开目录；`.part` 临时文件不应出现在完成后的封面分片目录中。建议用目录级增量同步工具复制新增和修改文件，不要每次重新传输整个封面库。
 
 封面图片可能有独立版权，不要把整个封面库作为公开下载包发布。
 
