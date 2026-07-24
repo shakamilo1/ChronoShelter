@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - exercised in dependency checks.
     UnidentifiedImageError = OSError  # type: ignore[assignment]
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-API_URL = "https://api.bgm.tv/v0/subjects"
+API_URL = os.environ.get("CHRONOSHELTER_BANGUMI_API_URL", "https://api.bgm.tv/v0/subjects")
 SUBJECT_TYPE = 2
 PAGE_LIMIT = 50
 USER_AGENT = "shakamilo1/ChronoShelter-cover-sync/1.0 (https://github.com/shakamilo1/ChronoShelter)"
@@ -50,6 +50,7 @@ REQUIRED_SYNC_RUNS_COLUMNS = {"run_type", "next_offset", "total", "updated_at"}
 REQUIRED_MANIFEST_NOT_NULL = {"subject_type", "retry_count"}
 REQUIRED_SYNC_RUNS_NOT_NULL = {"next_offset", "updated_at"}
 PYTHON_SCHEMA_VERSION = 1
+STALE_PART_SECONDS = 24 * 60 * 60
 
 
 class CoverSyncError(RuntimeError):
@@ -107,17 +108,25 @@ def ensure_cover_root() -> None:
 
 
 def cleanup_stale_parts() -> None:
-    """Remove orphaned download temp files from previous interrupted runs only."""
+    """Remove only old orphaned temp files; never delete fresh .part files that may belong to another active process."""
     candidates: list[Path] = []
     if tmp_dir().exists():
         candidates.extend(tmp_dir().glob("*.part"))
     subjects = covers_dir() / "subjects"
     if subjects.exists():
         candidates.extend(subjects.rglob("*.part"))
+    cutoff = time.time() - STALE_PART_SECONDS
     for path in candidates:
         try:
-            if path.is_file() or path.is_symlink():
-                path.unlink()
+            if not (path.is_file() or path.is_symlink()):
+                continue
+            try:
+                mtime = path.lstat().st_mtime
+            except OSError:
+                continue
+            if mtime > cutoff:
+                continue
+            path.unlink()
         except OSError:
             print(f"WARNING: could not remove stale temp file: {path}", file=sys.stderr)
 
@@ -262,18 +271,24 @@ def is_no_icon(url: str) -> bool:
     return PurePosixPath(urllib.parse.urlparse(url).path).name == "no_icon_subject.png"
 
 
+def is_strict_bangumi_api(parsed: urllib.parse.ParseResult) -> bool:
+    return parsed.scheme == "https" and parsed.hostname == "api.bgm.tv" and not parsed.username and not parsed.password and parsed.port in (None, 443)
+
+
 def normalize_api_url(url: str) -> urllib.parse.ParseResult:
     parsed = urllib.parse.urlparse(url)
-    if parsed.scheme != "https" or parsed.hostname != "api.bgm.tv" or parsed.username or parsed.password or parsed.port not in (None, 443):
-        raise CoverSyncError("refusing to send Bangumi API request outside https://api.bgm.tv:443")
-    return parsed
+    if is_strict_bangumi_api(parsed):
+        return parsed
+    if os.environ.get("CHRONOSHELTER_TEST_ALLOW_LOCAL_HTTP") == "1" and parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"} and not parsed.username and not parsed.password:
+        return parsed
+    raise CoverSyncError("refusing to send Bangumi API request outside https://api.bgm.tv:443")
 
 
 def api_headers(url: str) -> dict[str, str]:
-    normalize_api_url(url)
+    parsed = normalize_api_url(url)
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     token = os.environ.get("BANGUMI_ACCESS_TOKEN")
-    if token:
+    if token and is_strict_bangumi_api(parsed):
         headers["Authorization"] = f"Bearer {token}"
     return headers
 
@@ -420,9 +435,11 @@ def fetch_subject_page(offset: int, proxy: str | None, timeout: float = 30) -> d
 
 def validate_image_url(url: str) -> urllib.parse.ParseResult:
     parsed = urllib.parse.urlparse(url)
-    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.port not in (None, 443):
-        raise CoverSyncError("invalid or unsafe image URL/redirect")
-    return parsed
+    if parsed.scheme == "https" and parsed.hostname and not parsed.username and not parsed.password and parsed.port in (None, 443):
+        return parsed
+    if os.environ.get("CHRONOSHELTER_TEST_ALLOW_LOCAL_HTTP") == "1" and parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"} and not parsed.username and not parsed.password:
+        return parsed
+    raise CoverSyncError("invalid or unsafe image URL/redirect")
 
 
 def follow_image_redirects_to_tmp(url: str, proxy: str | None, tmp: Path, timeout: float = 45, max_redirects: int = 5, total_timeout: float = IMAGE_TOTAL_TIMEOUT) -> tuple[int, dict[str, str], str]:

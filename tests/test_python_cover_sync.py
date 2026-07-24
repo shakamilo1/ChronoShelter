@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
+import pytest
 import os
 import subprocess
 import sys
@@ -537,5 +539,79 @@ def test_python_real_slow_image_and_redirect_share_deadline(monkeypatch, tmp_pat
             raise AssertionError("redirect slow image response was accepted")
         assert time.monotonic() - start <= 0.75
         assert not tmp2.exists()
+    finally:
+        server.shutdown(); thread.join(5)
+
+
+def test_python_startup_cleanup_preserves_active_part_files(monkeypatch, tmp_path):
+    covers, _state = configure_paths(monkeypatch, tmp_path)
+    active_dir = covers / "subjects" / "000" / "491"
+    active_dir.mkdir(parents=True)
+    active = active_dir / ".491569-active.part"
+    active.write_bytes(b"active")
+    old = active_dir / ".491569-old.part"
+    old.write_bytes(b"old")
+    stale = time.time() - dl.STALE_PART_SECONDS - 60
+    os.utime(old, (stale, stale))
+    dl.ensure_dirs()
+    assert active.exists()
+    assert not old.exists()
+
+
+def test_python_cli_full_sync_verify_export_with_local_http_server(tmp_path):
+    Image = pytest.importorskip("PIL.Image")
+    buf = io.BytesIO()
+    Image.new("RGB", (1, 1), (0, 0, 0)).save(buf, format="PNG")
+    body = buf.getvalue()
+    class LocalCoverHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path.startswith("/v0/subjects"):
+                page = {"total": 1, "limit": 50, "offset": 0, "data": [
+                    {"id": 491569, "type": 2, "images": {"large": f"http://127.0.0.1:{self.server.server_port}/cover/491569_cli.png"}}
+                ]}
+                encoded = json.dumps(page).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+                return
+            if self.path == "/cover/491569_cli.png":
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self.send_response(404); self.end_headers()
+        def log_message(self, *_args): return
+    server = ThreadingHTTPServer(("127.0.0.1", 0), LocalCoverHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+    covers = tmp_path / "covers"
+    state = tmp_path / "state"
+    env = os.environ.copy()
+    env.update({
+        "CHRONOSHELTER_COVERS_DIR": str(covers),
+        "CHRONOSHELTER_COVER_SYNC_STATE_DIR": str(state),
+        "CHRONOSHELTER_BANGUMI_API_URL": f"http://127.0.0.1:{server.server_port}/v0/subjects",
+        "CHRONOSHELTER_TEST_ALLOW_LOCAL_HTTP": "1",
+        "BANGUMI_ACCESS_TOKEN": "",
+        "NO_PROXY": "*",
+    })
+    try:
+        sync_proc = subprocess.run([sys.executable, "tools/download_covers.py", "sync", "--max-pages=1", "--max-items=1", "--api-delay=0", "--download-delay=0", "--verbose"], cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        assert sync_proc.returncode == 0, sync_proc.stderr
+        stats = json.loads(sync_proc.stdout.strip().splitlines()[-1])
+        assert stats["downloaded"] == 1
+        assert stats["processed"] == 1
+        verify_proc = subprocess.run([sys.executable, "tools/download_covers.py", "verify-files"], cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        assert verify_proc.returncode == 0, verify_proc.stderr
+        mapping = tmp_path / "mapping.jsonl"
+        export_proc = subprocess.run([sys.executable, "tools/download_covers.py", "export-mapping", f"--file={mapping}"], cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        assert export_proc.returncode == 0, export_proc.stderr
+        rows = [json.loads(line) for line in mapping.read_text().splitlines()]
+        assert len(rows) == 1
+        assert rows[0]["status"] == "cached"
+        assert rows[0]["local_path"] == "subjects/000/491/491569_cli.png"
     finally:
         server.shutdown(); thread.join(5)

@@ -92,7 +92,7 @@ var/cover-sync/
 └── reports/
 ```
 
-下载临时 `.part` 文件写入最终目标所在的 `covers/subjects/{level1}/{level2}/` 分片目录，验证完成前最终文件名不会出现；启动时会清理遗留 `.part`。测试或隔离运行可用 `CHRONOSHELTER_COVER_SYNC_STATE_DIR` 指向临时状态目录、`CHRONOSHELTER_COVERS_DIR` 指向临时封面根目录。SQLite 记录 `subject_id`、固定的 `subject_type=2`、`downloaded_url`、`observed_url`、`remote_filename`、`relative_path`、`mime_type`、`file_extension`、`file_size`、`sha256`、`etag`、`last_modified`、`artifact_status`、`deploy_status`、`last_check_result`、`last_error`、`checked_at`、`last_success_at`、`retry_count`。如果检测到旧 PHP 同步器留下的不兼容 `covers.sqlite`，Python 会立即退出并提示备份后使用新的 `CHRONOSHELTER_COVER_SYNC_STATE_DIR`，不会随机运行到缺列失败。同步进度记录 `run_type`、`next_offset`、`total` 和更新时间。
+下载临时 `.part` 文件写入最终目标所在的 `covers/subjects/{level1}/{level2}/` 分片目录，验证完成前最终文件名不会出现；启动时只清理足够陈旧的遗留 `.part`，不会删除其他活跃同步进程刚创建的临时文件。测试或隔离运行可用 `CHRONOSHELTER_COVER_SYNC_STATE_DIR` 指向临时状态目录、`CHRONOSHELTER_COVERS_DIR` 指向临时封面根目录。SQLite 记录 `subject_id`、固定的 `subject_type=2`、`downloaded_url`、`observed_url`、`remote_filename`、`relative_path`、`mime_type`、`file_extension`、`file_size`、`sha256`、`etag`、`last_modified`、`artifact_status`、`deploy_status`、`last_check_result`、`last_error`、`checked_at`、`last_success_at`、`retry_count`。如果检测到旧 PHP 同步器留下的不兼容 `covers.sqlite`，Python 会立即退出并提示备份后使用新的 `CHRONOSHELTER_COVER_SYNC_STATE_DIR`，不会随机运行到缺列失败。同步进度记录 `run_type`、`next_offset`、`total` 和更新时间。
 
 ## 命令
 
@@ -173,6 +173,7 @@ Remove-Item Env:BANGUMI_ACCESS_TOKEN -ErrorAction SilentlyContinue
 $env:CHRONOSHELTER_COVERS_DIR='\\NAS-SHARE\Web\chronoshelter-pr6-runtime\covers'
 $env:CHRONOSHELTER_COVER_SYNC_STATE_DIR='\\NAS-SHARE\Web\chronoshelter-pr6-runtime\var\cover-sync'
 python tools/download_covers.py sync --max-pages=1 --max-items=1 --api-delay=0 --download-delay=0 --verbose
+# 确认最终统计中 downloaded=1；如果不是 1，不要继续正式同步或导入。
 python tools/download_covers.py verify-files
 python tools/download_covers.py export-mapping --file '\\NAS-SHARE\Web\chronoshelter-pr6-runtime\var\cover-sync\reports\cover-mapping-test.jsonl'
 ```

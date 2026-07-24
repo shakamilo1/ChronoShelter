@@ -28,7 +28,7 @@ def test_php_import_mapping_validates_file_fields_and_uses_transaction():
 
 
 def test_python_syncer_owns_bangumi_api_filename_mapping_and_export():
-    assert 'API_URL = "https://api.bgm.tv/v0/subjects"' in PYTHON
+    assert '"https://api.bgm.tv/v0/subjects"' in PYTHON
     assert "SUBJECT_TYPE = 2" in PYTHON
     assert "PAGE_LIMIT = 50" in PYTHON
     assert "def safe_remote_filename" in PYTHON
