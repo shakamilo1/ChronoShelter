@@ -202,25 +202,45 @@ data/
 └── logs/              # 离线工具日志
 ```
 
-## 12. 封面批量下载
+## 首页分页索引迁移
 
-安装离线工具依赖：
-
-```bash
-python -m pip install PyMySQL Pillow
-```
-
-运行：
+已有部署升级后必须在公共库 `chrono_bangumi` 执行：
 
 ```bash
-python tools/download_covers.py --missing --limit 500 --delay 3
+mysql -u root -p chrono_bangumi < sql/migrations/004_add_subjects_pagination_indexes.sql
 ```
 
-失败日志位于：
+部署检查会同时检查上述两个分页索引，缺少时会提示执行 `sql/migrations/004_add_subjects_pagination_indexes.sql`。
 
-```text
-logs/cover_download.log
+该迁移只新增 `idx_subjects_type_date_id (type, date, id)` 和保留未来评分排序用的 `idx_subjects_type_score_id (type, score, id)`，不需要重建数据库、不修改 `chrono_library` 私人收藏、不修改封面文件。首页默认 `date DESC, id DESC`，先用索引确定当前页 ID，再读取 50 条完整记录并关联封面/收藏，避免依赖 MariaDB 查询缓存掩盖慢查询。未来新增名称、NSFW、标签筛选时，条件必须放进内层分页查询并同步到 `count_anime()`；`meta_tags` JSON 不应直接建立普通 B-tree 索引。
+
+## 12. 动画封面离线同步
+
+网页请求不会下载 Bangumi 封面，也不会访问 `api.bgm.tv` 或 `lain.bgm.tv`。封面只由 Windows/Python 离线工具维护，并且固定只处理 Bangumi `type=2` 动画、批量接口 `GET /v0/subjects?type=2&limit=50&offset=...`、`images.large`。对标准 Bangumi `images.large` 文件名，优先将 API URL basename 与 SQLite 中保存的 `remote_filename` 比较；文件名相同且本地文件完整时跳过下载，文件名变化时下载新版，只有异常或不可识别 basename 才退回完整 URL 比较。API Token 只发送给 `https://api.bgm.tv` JSON 请求，图片下载请求不携带 Authorization，图片重定向也会重新生成无 Token 请求头。NAS 不负责联网下载；Windows Python 同步器只使用批量 subjects API 与 images.large，避免误用 `/v0/subjects/{id}/image` 或远程默认图。
+
+小规模验证（不会启动完整下载）：
+
+```bash
+python tools/download_covers.py sync --max-pages=1 --max-items=1 --api-delay=0 --download-delay=0 --verbose
 ```
+
+首次全量下载或中断恢复（只在已明确决定执行全量同步的 Windows/VPN 维护机器上运行）：
+
+```bash
+python tools/download_covers.py sync --resume
+```
+
+验证文件、导出映射，并在确认 `covers/subjects/` 已写入 NAS 共享目录后由 Windows PHP 连接 NAS MariaDB 导入：
+
+```bash
+python tools/download_covers.py verify-files
+python tools/download_covers.py export-mapping --file=var/cover-sync/reports/cover-mapping.jsonl
+php bin/bangumi_covers.php import-mapping --file=var/cover-sync/reports/cover-mapping.jsonl
+```
+
+离线 Python 封面同步不连接 MariaDB，下载完成后通过 `export-mapping` 导出；确认图片已写入 NAS 共享目录后，在 Windows 维护机上运行 PHP `import-mapping` 连接 NAS MariaDB 更新 `cover_cache`。
+
+运行数据在非公开目录 `var/cover-sync/`，正式图片在 `covers/subjects/`，文件名保留 Bangumi `images.large` URL 的安全 basename，例如 `covers/subjects/000/001/1234_Ewjo.jpg`。正式服务器必须同时部署/同步 `covers/subjects/`、确保本地存在 `covers/logo.png`，并导入最新 `cover_cache.local_path` 映射；单独的 `var/cover-sync/covers.sqlite` 可只保留在维护机器。详见 `docs/bangumi_cover_sync.md`。
 
 ## 13. 索引兼容性说明
 
@@ -232,3 +252,8 @@ ON `subjects` (`type`, `name`(191), `name_cn`(191));
 ```
 
 不要改回完整 `name` / `name_cn` 联合索引，否则部分 MySQL/MariaDB 环境会因 key length 超过 3072 bytes 而导入失败。
+
+
+### 封面清理安全规则
+
+同步程序不会在新封面下载成功、SQLite 更新、MariaDB 写入或 import-mapping 时自动删除旧封面。SQLite 中旧的 `status` 列仅作兼容摘要，新的运行逻辑使用 `artifact_status` 表示最后成功文件是否可用、`deploy_status` 表示 `deployed`/`pending_deploy`/`mapping_failed`，以及 `last_check_result` 记录 `unchanged`、`updated`、`remote_missing`、`http_failed`、`local_invalid` 等最近检查结果。失败的 `pending_update`、`failed`、`mapping_failed`、`remote_missing` 不会污染网站当前 `cached` 映射；只要旧文件仍有效，export-mapping 会继续导出旧封面。本 PR 不提供实际封面删除命令；旧文件在确认不再被生产 `cover_cache` 或可信映射引用前必须保留。

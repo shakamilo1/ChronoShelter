@@ -44,6 +44,8 @@ Recommended logical fields:
 
 The PHP collection layer writes the canonical `chrono_library.collections` fields directly; legacy field-name mapping is no longer part of the web runtime.
 
+`chrono_library.cover_cache` is the web runtime's only current-cover mapping source. Web pages read `cover_cache.local_path` for `status='cached'`, validate that local file, and never guess filenames from `subject_id`. The cache row is intentionally small and includes `remote_filename`, `local_path`, and `updated_at` alongside `subject_id`/`status`; JSONL import uses `source_url`, `content_type`, `file_size`, and `sha256` for validation but does not persist them to MariaDB; `local_path` is relative to `covers/`, for example `subjects/000/001/1234_Ewjo.jpg`.
+
 ## Inspection
 
 ```bash
@@ -72,3 +74,7 @@ These SQL files are generated for manual review/execution only. They must not be
 - `persons`: `id`, `name`, `type`, `career`, `infobox`, `summary`, `comments`, `collects`
 - `characters`: `id`, `role`, `name`, `infobox`, `summary`, `comments`, `collects`
 - relation tables: Archive relation keys are preserved (`subject_id`, `person_id`, `character_id`, `related_subject_id`, `related_person_id`, `relation_type`, `position`, `appear_eps`, `order`, `summary`, `person_type`, `spoiler`, `ended`).
+
+## Cover sync SQLite state model
+
+The offline `cover_manifest.status` column is retained as a deprecated compatibility summary for older local SQLite databases. New CLI logic separates the authoritative state into `artifact_status` (last verified local artifact availability), `deploy_status` (`deployed`, `pending_deploy`, or `mapping_failed`), and `last_check_result` (`unchanged`, `updated`, `remote_missing`, `http_failed`, `invalid_remote`, `local_invalid`, etc.). Python sync/verify/export owns the local SQLite manifest; PHP import-mapping must not open or update it and only imports JSONL into MariaDB `cover_cache`.

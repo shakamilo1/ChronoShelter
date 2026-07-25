@@ -98,3 +98,25 @@ def test_split_index_files_target_single_databases():
     assert "cover_cache" not in bangumi_sql
     assert "subjects" not in library_sql
     assert "episodes" not in library_sql
+
+
+def test_cover_cache_schema_contains_explicit_mapping_columns():
+    sql = Path("sql/create_chrono_library_tables.sql").read_text(encoding="utf-8")
+    for column in ["remote_filename", "local_path", "updated_at"]:
+        assert f"`{column}`" in sql
+    assert "subjects/{level1}/{level2}/{subject_id}_{BangumiSuffix}.{ext}" in sql
+    assert not Path("sql/migrations/003_cover_cache_mapping_columns.sql").exists()
+
+
+def test_fresh_cover_cache_schema_matches_import_mapping_columns():
+    required = ["subject_id", "status", "remote_filename", "local_path", "updated_at"]
+    for schema_path in [Path("database/chrono_library_schema.sql"), Path("sql/create_chrono_library_tables.sql")]:
+        sql = schema_path.read_text(encoding="utf-8")
+        start = sql.index("CREATE TABLE IF NOT EXISTS `cover_cache`")
+        block = sql[start:sql.index(") ENGINE=InnoDB", start)]
+        for column in required:
+            assert f"`{column}`" in block, f"{schema_path} is missing {column} in fresh cover_cache schema"
+        assert "PRIMARY KEY (`subject_id`)" in block
+        assert "`remote_filename` VARCHAR(255)" in block
+        for removed in ["`source_url`", "`content_type`", "`file_size`", "`sha256`", "`error`", "`http_status`", "`width`", "`height`"]:
+            assert removed not in block

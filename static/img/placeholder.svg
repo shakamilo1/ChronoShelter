@@ -1,5 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="480" height="640" viewBox="0 0 480 640">
   <rect width="480" height="640" fill="#202838"/>
   <text x="240" y="310" fill="#9fb0ca" font-family="sans-serif" font-size="28" text-anchor="middle">No Local Cover</text>
-  <text x="240" y="350" fill="#6f7f99" font-family="sans-serif" font-size="18" text-anchor="middle">Run tools/cache_covers.py</text>
+  <text x="240" y="350" fill="#6f7f99" font-family="sans-serif" font-size="18" text-anchor="middle">Use offline cover sync</text>
+  <text x="240" y="378" fill="#6f7f99" font-family="sans-serif" font-size="14" text-anchor="middle">python tools/download_covers.py sync</text>
 </svg>

@@ -26,8 +26,22 @@ try {
             $missing[] = library_database_name() . '.' . $table;
         }
     }
+    foreach (required_columns()['library'] ?? [] as $table => $columns) {
+        foreach ($columns as $column) {
+            if (!column_exists($library, library_database_name(), $table, $column)) {
+                $missing[] = library_database_name() . '.' . $table . '.' . $column;
+            }
+        }
+    }
+    foreach (required_indexes()['public'] ?? [] as $table => $indexes) {
+        foreach ($indexes as $index) {
+            if (!index_exists($public, public_database_name(), $table, $index)) {
+                $missing[] = public_database_name() . '.' . $table . '.' . $index . ' (run sql/migrations/004_add_subjects_pagination_indexes.sql)';
+            }
+        }
+    }
     $schemaOk = $missing === [];
-    $checks[] = ['Schema', $schemaOk, $schemaOk ? 'all required tables exist' : 'missing: ' . implode(', ', $missing)];
+    $checks[] = ['Schema', $schemaOk, $schemaOk ? 'all required tables and columns exist' : 'missing: ' . implode(', ', $missing)];
 } catch (Throwable $error) {
     $checks[] = ['MariaDB', false, $error->getMessage()];
     $checks[] = ['Schema', false, 'database connection failed'];
@@ -45,6 +59,7 @@ require __DIR__ . '/templates/header.php';
 </table>
 <?php if (!$schemaOk): ?>
 <section class="setup-error"><h2>初始化提示</h2><pre>mysql -u root -p chrono_bangumi &lt; database/chrono_bangumi_schema.sql
-mysql -u root -p chrono_library &lt; database/chrono_library_schema.sql</pre></section>
+mysql -u root -p chrono_library &lt; database/chrono_library_schema.sql
+mysql -u root -p chrono_bangumi &lt; sql/migrations/004_add_subjects_pagination_indexes.sql</pre></section>
 <?php endif; ?>
 <?php require __DIR__ . '/templates/footer.php'; ?>

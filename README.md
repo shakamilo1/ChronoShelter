@@ -26,7 +26,7 @@ ChronoShelter/
 │   ├── css/
 │   ├── js/
 │   └── img/
-├── covers/                # 本地缓存封面：covers/subjects/{分片}/{subject_id}.{ext}
+├── covers/                # 本地缓存封面：covers/subjects/{level1}/{level2}/{safe_remote_filename}
 ├── data/                  # Archive 输入、处理结果与离线日志
 ├── database/              # 新部署初始化 schema
 ├── docs/                  # 部署与维护文档
@@ -176,12 +176,24 @@ CHRONOSHELTER_LIBRARY_DB_NAME=chrono_library
 - `collection_edit.php?id=xxx`：编辑是否收藏、收藏日期、媒体类型、字幕组、来源网站、我的评分、备注和观看进度。
 - `admin.php`：显示 subjects 数量、episodes 数量、收藏数量，并预留 Bangumi 数据更新入口。
 
+## 首页分页性能与索引
+
+首页只展示 `subjects.type = 2` 动画，默认按 `date DESC, id DESC` 排序。`list_anime()` 先在内层查询使用 `idx_subjects_type_date_id (type, date, id)` 只读取当前页的 `id,date`，完成 `WHERE type = 2`、排序、`LIMIT/OFFSET` 后，再按主键读取这 50 条完整记录并关联 `cover_cache` 与 `collections`，避免 MariaDB 对全部动画做临时表和 filesort。生产查询不依赖 MariaDB 查询缓存，也不使用 `SQL_NO_CACHE`。
+
+已有部署不需要重建数据库、不需要修改私人收藏数据、不需要修改或重新下载封面，但必须在 `chrono_bangumi` 上执行新增索引迁移：
+
+```bash
+mysql -u root -p chrono_bangumi < sql/migrations/004_add_subjects_pagination_indexes.sql
+```
+
+保留 `idx_subjects_type_score_id (type, score, id)` 供未来评分排序使用。未来如果增加名称、NSFW 或标签筛选，筛选条件必须进入内层分页查询的 `WHERE`，并让 `count_anime() 使用相同条件`；普通 B-tree 只适合精确/前缀名称搜索（如 `高达%`），不解决 `%高达%` 任意包含搜索。`meta_tags` 是 JSON，不要直接给整段 JSON 建普通索引；如需标签筛选，应拆成 `subject_meta_tags(subject_id, tag)` 并建立 `(tag, subject_id)`。
+
 ## 图片缓存
 
 网页请求只读取本地目录中的封面：
 
 ```text
-covers/{subject_id}.jpg
+covers/subjects/{level1}/{level2}/{subject_id}_{BangumiSuffix}.{ext}
 ```
 
 本地占位图在 `config/config.php` 中配置：
@@ -195,9 +207,9 @@ covers/{subject_id}.jpg
 ],
 ```
 
-页面优先显示分片目录中的本地封面，例如 `covers/subjects/000/491/491569.jpg`；条目封面不存在、为空或损坏时立即显示 `covers/logo.png`。如果配置的占位图也不存在，则退回 `static/img/placeholder.svg`。PHP 页面不会访问 Bangumi、不会在渲染期间下载封面，也不会因为外部站点不可达而等待超时。
+页面只显示数据库 `cover_cache.local_path` 指向的本地封面，文件名来自 `images.large` URL 的安全 basename（同一 subject 可能先后出现多个文件名），扩展名由真实图片格式决定并支持 `jpg`、`png`、`webp`，例如 `covers/subjects/000/491/491569_xxxxx.jpg`；条目封面不存在、为空或损坏时立即显示 `covers/logo.png`。如果配置的占位图也不存在，则退回 `static/img/placeholder.svg`。PHP 页面不会访问 Bangumi、不会在渲染期间下载封面，也不会因为外部站点不可达而等待超时。
 
-动画封面只通过 PHP CLI 离线同步工具维护，详见 [`docs/bangumi_cover_sync.md`](docs/bangumi_cover_sync.md)。需要补充条目封面时，应在能够访问 Bangumi 的独立维护环境中运行 `php bin/bangumi_covers.php sync --resume`，再把 `covers/subjects/` 同步到 NAS，并在 NAS 本地准备 `covers/logo.png`；不要从网页请求触发下载。
+动画封面只通过 Windows/Python 离线同步工具维护，详见 [`docs/bangumi_cover_sync.md`](docs/bangumi_cover_sync.md)。需要补充条目封面时，应在能够访问 Bangumi 的独立维护环境中运行 `python tools/download_covers.py sync --resume`，再把 `covers/subjects/` 同步到 NAS，并在 NAS 本地准备 `covers/logo.png`；不要从网页请求触发下载。
 
 ## 数据目录规范
 
@@ -227,7 +239,7 @@ python importer/import_archive_dump.py --dir data/archive/processed --dry-run
 python importer/import_archive_dump.py --dir data/archive/processed
 python importer/import_archive_dump.py --dir data/archive/processed --batch-size 1000
 python tools/archive_update.py --latest
-php bin/bangumi_covers.php sync --max-pages=1 --max-items=10 --dry-run
+python tools/download_covers.py sync --max-pages=1 --max-items=1 --api-delay=0 --download-delay=0
 python importer/bangumi_data_sync.py --help
 ```
 
@@ -324,42 +336,53 @@ CHRONOSHELTER_AUTH_PASSWORD_HASH='password_hash 输出值'
 
 ## 封面批量下载工具
 
-网页浏览不会联网补齐封面。只有在当前维护环境能够访问 Bangumi 时，才可手动运行离线 PHP CLI 工具。该工具固定只扫描 `type=2` 动画，使用 Bangumi 批量接口、`limit=100`、`images.large`，并把封面保存到 `covers/subjects/` 两级分片目录。
+网页浏览不会联网补齐封面。正式架构是：NAS 只提供共享目录、MariaDB 和网页服务；开启 VPN 的 Windows 维护机运行 Python 同步器并可直接写入 NAS SMB/UNC 共享目录，随后 Windows PHP 连接 NAS MariaDB 执行 `import-mapping`。Python 同步器固定只扫描 Bangumi `type=2` 动画，使用官方 `GET /v0/subjects?type=2&limit=50&offset=...` 批量接口，只读取 `images.large`。对标准 Bangumi `images.large` 文件名，优先将 API URL basename 与 SQLite 中保存的 `remote_filename` 比较；文件名相同且本地文件完整时跳过下载，文件名变化时下载新版，只有异常或不可识别 basename 才退回完整 URL 比较。
 
-小规模验证：
-
-```bash
-php bin/bangumi_covers.php sync --max-pages=1 --max-items=10 --dry-run
-```
-
-首次全量同步或中断后恢复：
+安装 Python 依赖：
 
 ```bash
-php bin/bangumi_covers.php sync --resume
+python -m pip install -r requirements-dev.txt
 ```
 
-检查新动画和封面变化：
+小规模验证（不会启动完整下载）：
 
 ```bash
-php bin/bangumi_covers.php check-updates --resume
+python tools/download_covers.py sync --max-pages=1 --max-items=1 --api-delay=0 --download-delay=0 --verbose
 ```
 
-应用已发现的新封面或变化：
+首次全量同步或中断后恢复（仅在得到明确授权后运行）：
 
 ```bash
-php bin/bangumi_covers.php apply-updates --resume
+python tools/download_covers.py sync --resume
 ```
 
-随机深度抽查：
+本地严格验证与导出 PHP 可导入的 JSONL 映射：
 
 ```bash
-php bin/bangumi_covers.php deep-check --sample=100
+python tools/download_covers.py verify-files
+python tools/download_covers.py export-mapping --file=var/cover-sync/reports/cover-mapping.jsonl
 ```
 
-重试失败项目：
+确认 `covers/subjects/` 中新增或更新的文件已经写入 NAS 共享目录后，在 Windows 维护机上用 PHP 连接 NAS MariaDB 导入映射：
 
 ```bash
-php bin/bangumi_covers.php retry-failed
+php bin/bangumi_covers.php import-mapping --file=var/cover-sync/reports/cover-mapping.jsonl
 ```
 
-同步清单使用非公开 SQLite：`var/cover-sync/covers.sqlite`。正式服务器无法访问 Bangumi 时，复制 `covers/subjects/` 并在服务器本地准备好 `covers/logo.png` 后，网站仍可正常显示本地封面或立即回退到 `covers/logo.png`。完整说明见 [`docs/bangumi_cover_sync.md`](docs/bangumi_cover_sync.md)。
+`BANGUMI_ACCESS_TOKEN` 可选且只会发送给严格匹配的 `https://api.bgm.tv:443` API JSON 请求；图片请求和每一跳重定向都不会携带 Authorization。可用 `CHRONOSHELTER_COVERS_DIR`、`CHRONOSHELTER_COVER_SYNC_STATE_DIR` 指向 NAS 共享目录，并用 `--proxy` 或 `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` 配置代理。NAS 不负责联网下载；Windows Python 负责下载/验证/导出，Windows PHP 负责连接 NAS MariaDB 执行 `import-mapping`。完整说明见 [`docs/bangumi_cover_sync.md`](docs/bangumi_cover_sync.md)。
+
+### 封面清理安全规则
+
+同步程序不会在新封面下载成功、SQLite 更新、MariaDB 写入或 import-mapping 时自动删除旧封面。SQLite 中旧的 `status` 列仅作兼容摘要，新的运行逻辑使用 `artifact_status` 表示最后成功文件是否可用、`deploy_status` 表示 `deployed`/`pending_deploy`/`mapping_failed`，以及 `last_check_result` 记录 `unchanged`、`updated`、`remote_missing`、`http_failed`、`local_invalid` 等最近检查结果。失败的 `pending_update`、`failed`、`mapping_failed`、`remote_missing` 不会污染网站当前 `cached` 映射；只要旧文件仍有效，export-mapping 会继续导出旧封面。本 PR 不提供实际封面删除命令；旧文件在确认不再被生产 `cover_cache` 或可信映射引用前必须保留。
+
+### Windows Python 封面同步
+
+正式架构为 NAS 只提供共享目录、MariaDB 和网页服务；Windows 维护机在 VPN 下运行 `python tools/download_covers.py` 下载/验证/导出，并使用 Windows PHP 连接 NAS MariaDB 执行导入。可用 `CHRONOSHELTER_COVERS_DIR` 指向 NAS SMB/UNC 封面目录，`CHRONOSHELTER_COVER_SYNC_STATE_DIR` 指向 NAS 共享中的非公开同步状态目录；Python 同步器不会连接 MariaDB。常用命令：
+
+```powershell
+python tools/download_covers.py sync --resume
+python tools/download_covers.py verify-files
+python tools/download_covers.py export-mapping --file var/cover-sync/reports/cover-mapping.jsonl
+```
+
+随后确认封面文件已经写入 NAS 共享目录，再在 Windows 维护机上运行 `php bin/bangumi_covers.php import-mapping --file=var/cover-sync/reports/cover-mapping.jsonl`，由 Windows PHP 连接 NAS MariaDB 写入映射。默认命令不带代理；只有确实使用本地 HTTP 代理时才添加 `--proxy <代理地址>`，也可使用 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 环境变量。

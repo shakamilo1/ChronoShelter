@@ -3,577 +3,260 @@
 
 declare(strict_types=1);
 
-const BANGUMI_COVER_USER_AGENT = 'shakamilo1/chronoshelter-cover-archive/1.0';
-const BANGUMI_SUBJECTS_API = 'https://api.bgm.tv/v0/subjects';
-const SUBJECT_TYPE_ANIME = 2;
-const PAGE_LIMIT = 100;
-const STATUSES = ['pending', 'downloading', 'downloaded', 'unchanged', 'pending_update', 'no_cover', 'remote_missing', 'failed'];
-
 $root = dirname(__DIR__);
 require_once $root . '/includes/database.php';
 
 function cli_options(array $argv): array
 {
     $command = $argv[1] ?? 'help';
-    $options = [
-        'resume' => false,
-        'download-delay' => 1.0,
-        'api-delay' => 1.0,
-        'concurrency' => 1,
-        'max-pages' => null,
-        'max-items' => null,
-        'subject-id' => null,
-        'sample' => null,
-        'dry-run' => false,
-        'force' => false,
-        'verbose' => false,
-        'retry-failed' => false,
-        'all' => false,
-        'confirm-all' => false,
-        'prune-remote-missing' => false,
-    ];
+    $options = ['file' => null];
     for ($i = 2; $i < count($argv); $i++) {
         $arg = $argv[$i];
-        if (!str_starts_with($arg, '--')) {
-            continue;
-        }
+        if (!str_starts_with($arg, '--')) continue;
         $arg = substr($arg, 2);
         [$key, $value] = array_pad(explode('=', $arg, 2), 2, null);
-        if (!array_key_exists($key, $options)) {
+        if ($key === 'file') {
+            $options['file'] = $value;
+        } else {
             fwrite(STDERR, "Unknown option --{$key}\n");
             exit(2);
         }
-        if (is_bool($options[$key])) {
-            $options[$key] = $value === null ? true : filter_var($value, FILTER_VALIDATE_BOOLEAN);
-        } elseif (is_int($options[$key]) || in_array($key, ['max-pages', 'max-items', 'subject-id', 'sample'], true)) {
-            $options[$key] = $value === null ? null : max(0, (int) $value);
-        } else {
-            $options[$key] = $value === null ? $options[$key] : (float) $value;
-        }
     }
-    $options['concurrency'] = 1; // conservative implementation: accepted for compatibility, intentionally serial.
     return [$command, $options];
-}
-
-function now_utc(): string
-{
-    return gmdate('Y-m-d H:i:s');
 }
 
 function cover_sync_paths(): array
 {
-    $config = app_config()['covers'] ?? [];
-    $coversDir = rtrim((string) ($config['directory'] ?? dirname(__DIR__) . '/covers'), "/\\");
-    $stateDir = dirname(__DIR__) . '/var/cover-sync';
+    $root = dirname(__DIR__);
     return [
-        'covers' => $coversDir,
-        'subjects' => trim((string) ($config['subjects_directory'] ?? 'subjects'), '/'),
-        'state' => $stateDir,
-        'tmp' => $stateDir . '/tmp',
-        'logs' => $stateDir . '/logs',
-        'reports' => $stateDir . '/reports',
-        'sqlite' => $stateDir . '/covers.sqlite',
+        'covers' => rtrim((string) getenv('CHRONOSHELTER_COVERS_DIR') ?: ($root . '/covers'), DIRECTORY_SEPARATOR),
     ];
 }
 
 function ensure_runtime_dirs(): void
 {
-    foreach (['state', 'tmp', 'logs', 'reports'] as $key) {
-        $dir = cover_sync_paths()[$key];
-        if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
-            throw new RuntimeException("Cannot create {$dir}");
-        }
+    $covers = cover_sync_paths()['covers'];
+    if (is_link($covers)) {
+        throw new RuntimeException('covers root must not be a symlink');
+    }
+    if (!is_dir($covers) && !mkdir($covers, 0775, true) && !is_dir($covers)) {
+        throw new RuntimeException('cannot create covers directory');
     }
 }
 
-function db(): PDO
+function cover_partition_prefix(int $subjectId): string
 {
-    static $pdo = null;
-    if ($pdo instanceof PDO) {
-        return $pdo;
-    }
-    ensure_runtime_dirs();
-    $pdo = new PDO('sqlite:' . cover_sync_paths()['sqlite']);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $pdo->exec('PRAGMA journal_mode=WAL');
-    $pdo->exec('CREATE TABLE IF NOT EXISTS cover_manifest (
-        subject_id INTEGER PRIMARY KEY,
-        subject_type INTEGER NOT NULL DEFAULT 2,
-        downloaded_url TEXT NULL,
-        observed_url TEXT NULL,
-        relative_path TEXT NULL,
-        mime_type TEXT NULL,
-        file_extension TEXT NULL,
-        file_size INTEGER NULL,
-        sha256 TEXT NULL,
-        etag TEXT NULL,
-        last_modified TEXT NULL,
-        status TEXT NOT NULL DEFAULT \'pending\',
-        last_seen_at TEXT NULL,
-        last_checked_at TEXT NULL,
-        last_downloaded_at TEXT NULL,
-        retry_count INTEGER NOT NULL DEFAULT 0,
-        error_message TEXT NULL
-    )');
-    $pdo->exec('CREATE TABLE IF NOT EXISTS sync_runs (
-        run_id TEXT PRIMARY KEY,
-        run_type TEXT NOT NULL,
-        next_offset INTEGER NOT NULL DEFAULT 0,
-        total INTEGER NULL,
-        started_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        completed_at TEXT NULL,
-        run_status TEXT NOT NULL
-    )');
-    return $pdo;
+    return 'subjects/' . sprintf('%03d', intdiv($subjectId, 1000000)) . '/' . sprintf('%03d', intdiv($subjectId % 1000000, 1000)) . '/';
 }
 
-function cover_relative_path(int $subjectId, string $extension): string
+function cover_relative_path(int $subjectId, string $filename): string
 {
-    if ($subjectId <= 0 || !preg_match('/^[a-z0-9]+$/', $extension)) {
-        throw new InvalidArgumentException('invalid cover path input');
+    if (!preg_match('/^' . preg_quote((string) $subjectId, '/') . '_[A-Za-z0-9_-]+(?:--[a-f0-9]{12}|--[a-f0-9]{64})?\.(jpg|jpeg|png|webp)$/i', $filename)) {
+        throw new RuntimeException('invalid cover filename');
     }
-    $level1 = str_pad((string) intdiv($subjectId, 1000000), 3, '0', STR_PAD_LEFT);
-    $level2 = str_pad((string) intdiv($subjectId % 1000000, 1000), 3, '0', STR_PAD_LEFT);
-    return 'subjects/' . $level1 . '/' . $level2 . '/' . $subjectId . '.' . $extension;
+    return cover_partition_prefix($subjectId) . $filename;
+}
+
+function path_within_covers(string $absolute): bool
+{
+    $root = realpath(cover_sync_paths()['covers']);
+    $real = realpath($absolute);
+    return $root !== false && $real !== false && ($real === $root || str_starts_with($real, rtrim($root, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR));
 }
 
 function cover_absolute_path(string $relativePath): string
 {
-    if (!preg_match('#^subjects/[0-9]{3,}/[0-9]{3}/[0-9]+\.(jpg|png|webp)$#', $relativePath)) {
-        throw new InvalidArgumentException('unsafe relative cover path');
+    $relativePath = str_replace('\\', '/', $relativePath);
+    if ($relativePath === '' || str_starts_with($relativePath, '/') || str_contains($relativePath, '..') || preg_match('/[\x00-\x1f\x7f]/', $relativePath)) {
+        throw new RuntimeException('unsafe cover path');
     }
-    return cover_sync_paths()['covers'] . '/' . $relativePath;
+    return cover_sync_paths()['covers'] . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relativePath);
 }
 
-function request_headers(array $extra = []): array
+function validate_image_file(string $path, string $expectedMime): array
 {
-    $headers = ['User-Agent: ' . BANGUMI_COVER_USER_AGENT, 'Accept: application/json'];
-    $token = getenv('BANGUMI_ACCESS_TOKEN') ?: '';
-    if ($token !== '') {
-        $headers[] = 'Authorization: Bearer ' . $token;
+    if (is_link($path) || !is_file($path) || !path_within_covers($path)) {
+        throw new RuntimeException('image path is not a safe local file');
     }
-    foreach ($extra as $header) {
-        $headers[] = $header;
-    }
-    return $headers;
-}
-
-function http_request(string $url, array $headers, int $timeout = 30, int $maxRetries = 3): array
-{
-    $attempt = 0;
-    while (true) {
-        $attempt++;
-        $http_response_header = [];
-        $context = stream_context_create(['http' => [
-            'method' => 'GET',
-            'header' => implode("\r\n", $headers),
-            'timeout' => $timeout,
-            'ignore_errors' => true,
-        ]]);
-        $body = @file_get_contents($url, false, $context);
-        $status = 0;
-        $responseHeaders = [];
-        foreach ($http_response_header ?? [] as $line) {
-            if (preg_match('#^HTTP/\S+\s+(\d+)#', $line, $m)) {
-                $status = (int) $m[1];
-            } elseif (str_contains($line, ':')) {
-                [$name, $value] = explode(':', $line, 2);
-                $responseHeaders[strtolower(trim($name))] = trim($value);
-            }
-        }
-        if ($body !== false && !in_array($status, [429, 500, 502, 503, 504], true)) {
-            return ['status' => $status, 'headers' => $responseHeaders, 'body' => $body];
-        }
-        if ($attempt >= $maxRetries) {
-            return ['status' => $status, 'headers' => $responseHeaders, 'body' => $body === false ? '' : $body, 'error' => error_get_last()['message'] ?? 'request failed'];
-        }
-        $retryAfter = isset($responseHeaders['retry-after']) ? (int) $responseHeaders['retry-after'] : 0;
-        $sleep = $retryAfter > 0 ? $retryAfter : min(30, 2 ** $attempt) + random_int(0, 1000) / 1000;
-        usleep((int) ($sleep * 1000000));
-    }
-}
-
-function fetch_subject_page(int $offset): array
-{
-    $url = BANGUMI_SUBJECTS_API . '?type=' . SUBJECT_TYPE_ANIME . '&limit=' . PAGE_LIMIT . '&offset=' . $offset;
-    $response = http_request($url, request_headers());
-    if (($response['status'] ?? 0) !== 200) {
-        throw new RuntimeException('Bangumi API failed: HTTP ' . ($response['status'] ?? 0));
-    }
-    $json = json_decode((string) $response['body'], true);
-    if (!is_array($json)) {
-        throw new RuntimeException('Bangumi API JSON parse failed');
-    }
-    return $json;
-}
-
-function image_type_from_bytes(string $data, string $contentType): ?array
-{
-    $lower = strtolower(strtok($contentType, ';') ?: '');
-    if (str_starts_with($data, "\xFF\xD8\xFF") && in_array($lower, ['image/jpeg', 'image/jpg'], true)) return ['image/jpeg', 'jpg'];
-    if (str_starts_with($data, "\x89PNG\r\n\x1A\n") && $lower === 'image/png') return ['image/png', 'png'];
-    if (substr($data, 0, 4) === 'RIFF' && substr($data, 8, 4) === 'WEBP' && $lower === 'image/webp') return ['image/webp', 'webp'];
-    return null;
-}
-
-function validate_image_file(string $path, string $contentType): array
-{
-    if (!is_file($path) || filesize($path) <= 0) {
-        throw new RuntimeException('downloaded file is empty');
+    $size = filesize($path);
+    if ($size === false || $size <= 0 || $size > 20 * 1024 * 1024) {
+        throw new RuntimeException('invalid image file size');
     }
     $data = file_get_contents($path);
-    if ($data === false) {
-        throw new RuntimeException('cannot read downloaded file');
+    if ($data === false || strlen($data) !== $size || preg_match('/^\s*[<{[]/', $data)) {
+        throw new RuntimeException('invalid image content');
     }
-    $prefix = ltrim(substr($data, 0, 32));
-    if (str_starts_with($prefix, '<') || str_starts_with($prefix, '{') || str_starts_with($prefix, '[')) {
-        throw new RuntimeException('downloaded content is not an image');
+    $mime = (new finfo(FILEINFO_MIME_TYPE))->file($path) ?: '';
+    $expectedMime = strtolower(trim(explode(';', $expectedMime, 2)[0]));
+    if ($expectedMime !== '' && $mime !== $expectedMime) {
+        throw new RuntimeException('image MIME mismatch');
     }
-    $type = image_type_from_bytes($data, $contentType);
-    if ($type === null) {
-        throw new RuntimeException('unsupported or mismatched image type: ' . $contentType);
+    $ext = match ($mime) {
+        'image/jpeg' => 'jpg',
+        'image/png' => 'png',
+        'image/webp' => 'webp',
+        default => throw new RuntimeException('unsupported image MIME'),
+    };
+    $pathExt = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+    if ($pathExt === 'jpeg') $pathExt = 'jpg';
+    if ($pathExt !== $ext) {
+        throw new RuntimeException('image extension mismatch');
     }
-    if (str_contains($data, 'no_icon_subject')) {
-        throw new RuntimeException('Bangumi no-icon placeholder rejected');
+    if ($ext === 'jpg' && !(str_starts_with($data, "\xff\xd8") && str_ends_with($data, "\xff\xd9"))) {
+        throw new RuntimeException('JPEG structure is incomplete');
     }
-    return ['mime_type' => $type[0], 'extension' => $type[1], 'file_size' => filesize($path), 'sha256' => hash_file('sha256', $path)];
-}
-
-function download_image_to_tmp(int $subjectId, string $url, array $conditionalHeaders = []): array
-{
-    $tmp = cover_sync_paths()['tmp'] . '/' . $subjectId . '.part';
-    @unlink($tmp);
-    $response = http_request($url, request_headers($conditionalHeaders), 45);
-    if (($response['status'] ?? 0) === 304) {
-        return ['not_modified' => true, 'headers' => $response['headers'] ?? []];
+    if ($ext === 'png' && !str_contains($data, 'IEND')) {
+        throw new RuntimeException('PNG structure is incomplete');
     }
-    if (($response['status'] ?? 0) !== 200) {
-        throw new RuntimeException('image download failed: HTTP ' . ($response['status'] ?? 0));
+    if ($ext === 'webp' && !(substr($data, 0, 4) === 'RIFF' && substr($data, 8, 4) === 'WEBP')) {
+        throw new RuntimeException('WebP structure is incomplete');
     }
-    if (file_put_contents($tmp, (string) $response['body'], LOCK_EX) === false) {
-        throw new RuntimeException('cannot write temp image');
+    $info = @getimagesize($path);
+    if ($info === false || ($info[0] ?? 0) <= 0 || ($info[1] ?? 0) <= 0) {
+        throw new RuntimeException('image dimensions are invalid');
     }
-    $meta = validate_image_file($tmp, (string) (($response['headers']['content-type'] ?? '')));
-    $meta['tmp_path'] = $tmp;
-    $meta['etag'] = $response['headers']['etag'] ?? null;
-    $meta['last_modified'] = $response['headers']['last-modified'] ?? null;
-    return $meta;
-}
-
-function upsert_observed(int $subjectId, ?string $url, string $mode): string
-{
-    $pdo = db();
-    $existing = manifest_row($subjectId);
-    $now = now_utc();
-    if ($url === null || $url === '') {
-        $status = $existing && $existing['downloaded_url'] ? 'remote_missing' : 'no_cover';
-    } elseif (!$existing) {
-        $status = 'pending';
-    } elseif (($existing['downloaded_url'] ?? null) === $url && local_cover_ok($existing['relative_path'] ?? null)) {
-        $status = $mode === 'sync' ? 'downloaded' : 'unchanged';
-    } else {
-        $status = ($existing['downloaded_url'] ?? null) ? 'pending_update' : 'pending';
+    $pixels = (int) $info[0] * (int) $info[1];
+    if ($pixels <= 0 || $pixels > 50_000_000) {
+        throw new RuntimeException('image dimensions exceed safety limit');
     }
-    $stmt = $pdo->prepare('INSERT INTO cover_manifest (subject_id, subject_type, observed_url, status, last_seen_at, last_checked_at)
-        VALUES (:id, 2, :url, :status, :seen, :checked)
-        ON CONFLICT(subject_id) DO UPDATE SET observed_url = excluded.observed_url, status = excluded.status,
-        last_seen_at = excluded.last_seen_at, last_checked_at = excluded.last_checked_at, error_message = NULL');
-    $stmt->execute(['id' => $subjectId, 'url' => $url, 'status' => $status, 'seen' => $now, 'checked' => $now]);
-    return $status;
-}
-
-function manifest_row(int $subjectId): ?array
-{
-    $stmt = db()->prepare('SELECT * FROM cover_manifest WHERE subject_id = :id AND subject_type = 2');
-    $stmt->execute(['id' => $subjectId]);
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    return $row ?: null;
-}
-
-function local_cover_ok(?string $relativePath): bool
-{
-    if (!$relativePath) return false;
+    if (!function_exists('imagecreatefromstring')) {
+        throw new RuntimeException('GD image decoder is required for import-mapping validation');
+    }
+    set_error_handler(static function($severity, $message, $file, $line) { throw new ErrorException($message, 0, $severity, $file, $line); });
     try {
-        $path = cover_absolute_path($relativePath);
-    } catch (InvalidArgumentException) {
-        return false;
-    }
-    if (!is_file($path) || filesize($path) <= 0) return false;
-    $data = file_get_contents($path, false, null, 0, 16);
-    return is_string($data) && image_type_from_bytes($data . str_repeat("\0", 16), mime_content_type($path) ?: '') !== null;
-}
-
-function mark_failed(int $subjectId, string $message): void
-{
-    $stmt = db()->prepare('UPDATE cover_manifest SET status = \'failed\', retry_count = retry_count + 1, error_message = :error, last_checked_at = :checked WHERE subject_id = :id');
-    $stmt->execute(['id' => $subjectId, 'error' => mb_substr($message, 0, 1000), 'checked' => now_utc()]);
-}
-
-function apply_one(int $subjectId, bool $dryRun = false): bool
-{
-    $row = manifest_row($subjectId);
-    if (!$row || !($row['observed_url'] ?? null)) return false;
-    if ($dryRun) {
-        echo "dry-run download subject_id={$subjectId} url={$row['observed_url']}\n";
-        return true;
-    }
-    db()->prepare('UPDATE cover_manifest SET status = \'downloading\' WHERE subject_id = :id')->execute(['id' => $subjectId]);
-    $oldPath = $row['relative_path'] ?? null;
-    try {
-        $meta = download_image_to_tmp($subjectId, $row['observed_url']);
-        $relative = cover_relative_path($subjectId, $meta['extension']);
-        $target = cover_absolute_path($relative);
-        $targetDir = dirname($target);
-        if (!is_dir($targetDir) && !mkdir($targetDir, 0775, true) && !is_dir($targetDir)) {
-            throw new RuntimeException('cannot create cover directory');
-        }
-        if (!rename($meta['tmp_path'], $target)) {
-            throw new RuntimeException('cannot move cover atomically');
-        }
-        $stmt = db()->prepare('UPDATE cover_manifest SET downloaded_url = observed_url, relative_path = :path, mime_type = :mime,
-            file_extension = :ext, file_size = :size, sha256 = :sha, etag = :etag, last_modified = :lm,
-            last_downloaded_at = :downloaded, last_checked_at = :checked, status = \'downloaded\', error_message = NULL WHERE subject_id = :id');
-        $stmt->execute(['path' => $relative, 'mime' => $meta['mime_type'], 'ext' => $meta['extension'], 'size' => $meta['file_size'], 'sha' => $meta['sha256'], 'etag' => $meta['etag'], 'lm' => $meta['last_modified'], 'downloaded' => now_utc(), 'checked' => now_utc(), 'id' => $subjectId]);
-        if ($oldPath && $oldPath !== $relative) {
-            $oldAbsolute = cover_absolute_path($oldPath);
-            if (is_file($oldAbsolute)) @unlink($oldAbsolute);
-        }
-        sync_mysql_cover_cache($subjectId, 'cached', $relative, null, $meta);
-        return true;
+        $image = imagecreatefromstring($data);
     } catch (Throwable $exc) {
-        mark_failed($subjectId, $exc->getMessage());
-        sync_mysql_cover_cache($subjectId, 'failed', $oldPath, $exc->getMessage(), []);
-        return false;
+        restore_error_handler();
+        throw new RuntimeException('image decoder rejected file: ' . $exc->getMessage(), 0, $exc);
     }
+    restore_error_handler();
+    if ($image === false) {
+        throw new RuntimeException('image decoder rejected file');
+    }
+    return ['mime_type' => $mime, 'extension' => $ext, 'file_size' => $size, 'sha256' => hash_file('sha256', $path)];
 }
 
-function sync_mysql_cover_cache(int $subjectId, string $status, ?string $relativePath, ?string $error, array $meta): void
+function import_mapping_row_is_safe(array $row): array
 {
+    $subjectId = (int) ($row['subject_id'] ?? 0);
+    if ($subjectId <= 0 || (string) $subjectId !== (string) ($row['subject_id'] ?? '')) {
+        throw new RuntimeException('invalid subject_id in mapping');
+    }
+    $status = (string) ($row['status'] ?? '');
+    if (!in_array($status, ['cached', 'no_cover'], true)) {
+        throw new RuntimeException('invalid import status for subject_id=' . $subjectId);
+    }
+    if ($status === 'no_cover') {
+        foreach (['local_path', 'remote_filename', 'file_size', 'sha256', 'content_type', 'file_extension'] as $field) {
+            if (isset($row[$field]) && $row[$field] !== null && $row[$field] !== '') {
+                throw new RuntimeException('no_cover mapping must not include file fields for subject_id=' . $subjectId);
+            }
+        }
+        return ['subject_id' => $subjectId, 'status' => 'no_cover', 'remote_filename' => null, 'local_path' => null, 'updated_at' => $row['updated_at'] ?? null];
+    }
+    $relativePath = (string) ($row['local_path'] ?? '');
+    $remoteFilename = (string) ($row['remote_filename'] ?? '');
+    if ($relativePath === '' || $remoteFilename === '') {
+        throw new RuntimeException('cached mapping missing path fields for subject_id=' . $subjectId);
+    }
+    if (!preg_match('/^' . preg_quote((string) $subjectId, '/') . '_[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$/i', $remoteFilename)) {
+        throw new RuntimeException('unsafe remote_filename for subject_id=' . $subjectId);
+    }
+    $base = basename($relativePath);
+    $prefix = cover_partition_prefix($subjectId);
+    if (!str_starts_with(str_replace('\\', '/', $relativePath), $prefix) || !preg_match('/^' . preg_quote((string) $subjectId, '/') . '_[A-Za-z0-9_-]+(?:--[a-f0-9]{12}|--[a-f0-9]{64})?\.(jpg|jpeg|png|webp)$/i', $base)) {
+        throw new RuntimeException('mapped path does not match subject shard/name for subject_id=' . $subjectId);
+    }
+    $absolute = cover_absolute_path($relativePath);
+    if (is_link($absolute) || !is_file($absolute) || !path_within_covers($absolute)) {
+        throw new RuntimeException('mapped file missing or unsafe for subject_id=' . $subjectId);
+    }
+    if (!isset($row['file_size']) || filesize($absolute) !== (int) $row['file_size']) {
+        throw new RuntimeException('mapped file size mismatch for subject_id=' . $subjectId);
+    }
+    if (empty($row['sha256']) || !preg_match('/^[a-f0-9]{64}$/i', (string) $row['sha256']) || hash_file('sha256', $absolute) !== strtolower((string) $row['sha256'])) {
+        throw new RuntimeException('mapped file sha256 mismatch for subject_id=' . $subjectId);
+    }
+    $validated = validate_image_file($absolute, (string) ($row['content_type'] ?? ''));
+    if ($validated['file_size'] !== (int) $row['file_size'] || $validated['sha256'] !== strtolower((string) $row['sha256'])) {
+        throw new RuntimeException('mapped file metadata mismatch for subject_id=' . $subjectId);
+    }
+    $remoteExt = strtolower(pathinfo($remoteFilename, PATHINFO_EXTENSION));
+    if ($remoteExt === 'jpeg') $remoteExt = 'jpg';
+    if ($remoteExt !== $validated['extension']) {
+        throw new RuntimeException('remote filename extension mismatch for subject_id=' . $subjectId);
+    }
+    return ['subject_id' => $subjectId, 'status' => 'cached', 'remote_filename' => $remoteFilename, 'local_path' => $relativePath, 'updated_at' => $row['updated_at'] ?? null];
+}
+
+function cover_sync_library_db(): object
+{
+    if (isset($GLOBALS['cover_sync_library_db'])) return $GLOBALS['cover_sync_library_db'];
+    if (function_exists('db_library')) return db_library();
+    throw new RuntimeException('library database is not configured');
+}
+
+function import_mapping(array $options): array
+{
+    $file = $options['file'] ?? null;
+    if (!$file || !is_file((string) $file)) throw new RuntimeException('--file is required for import-mapping');
+    $rows = [];
+    $seen = [];
+    $handle = fopen((string) $file, 'rb');
+    if ($handle === false) throw new RuntimeException('cannot open mapping file');
+    while (($line = fgets($handle)) !== false) {
+        $line = trim($line);
+        if ($line === '') continue;
+        $decoded = json_decode($line, true);
+        if (!is_array($decoded)) { fclose($handle); throw new RuntimeException('invalid mapping JSON line'); }
+        $row = import_mapping_row_is_safe($decoded);
+        if (isset($seen[$row['subject_id']])) { fclose($handle); throw new RuntimeException('duplicate subject_id in mapping: ' . $row['subject_id']); }
+        $seen[$row['subject_id']] = true;
+        $rows[] = $row;
+    }
+    fclose($handle);
+    $pdo = cover_sync_library_db();
+    $pdo->beginTransaction();
     try {
-        $pdo = db_library();
-        $stmt = $pdo->prepare('INSERT INTO cover_cache (subject_id, status, local_path, error, content_type, file_size)
-            VALUES (:id, :status, :path, :error, :content_type, :file_size)
-            ON DUPLICATE KEY UPDATE status = VALUES(status), local_path = VALUES(local_path), error = VALUES(error), content_type = VALUES(content_type), file_size = VALUES(file_size), updated_at = CURRENT_TIMESTAMP');
-        $stmt->execute(['id' => $subjectId, 'status' => $status, 'path' => $relativePath, 'error' => $error, 'content_type' => $meta['mime_type'] ?? null, 'file_size' => $meta['file_size'] ?? null]);
-    } catch (Throwable) {
-        // MySQL cache is optional for the offline sync manifest; the web layer can also resolve partitioned files directly.
+        $stmt = $pdo->prepare("INSERT INTO cover_cache (subject_id, status, remote_filename, local_path, updated_at)
+            VALUES (:subject_id, :status, :remote_filename, :local_path, COALESCE(:updated_at, CURRENT_TIMESTAMP))
+            ON DUPLICATE KEY UPDATE status = IF(VALUES(status) = 'no_cover' AND status = 'cached', status, VALUES(status)), remote_filename = IF(VALUES(status) = 'no_cover' AND status = 'cached', remote_filename, VALUES(remote_filename)), local_path = IF(VALUES(status) = 'no_cover' AND status = 'cached', local_path, VALUES(local_path)), updated_at = VALUES(updated_at)");
+        foreach ($rows as $row) $stmt->execute($row);
+        $pdo->commit();
+    } catch (Throwable $exc) {
+        $pdo->rollBack();
+        throw $exc;
     }
-}
-
-function current_run(string $type, bool $resume): array
-{
-    $pdo = db();
-    if ($resume) {
-        $stmt = $pdo->prepare('SELECT * FROM sync_runs WHERE run_type = :type AND run_status = \'running\' ORDER BY started_at DESC LIMIT 1');
-        $stmt->execute(['type' => $type]);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        if ($row) return $row;
-    }
-    $run = ['run_id' => $type . '-' . gmdate('YmdHis'), 'run_type' => $type, 'next_offset' => 0, 'total' => null, 'started_at' => now_utc(), 'updated_at' => now_utc(), 'completed_at' => null, 'run_status' => 'running'];
-    $stmt = $pdo->prepare('INSERT INTO sync_runs (run_id, run_type, next_offset, total, started_at, updated_at, run_status) VALUES (:run_id, :run_type, :next_offset, :total, :started_at, :updated_at, :run_status)');
-    $stmt->execute([
-        'run_id' => $run['run_id'],
-        'run_type' => $run['run_type'],
-        'next_offset' => $run['next_offset'],
-        'total' => $run['total'],
-        'started_at' => $run['started_at'],
-        'updated_at' => $run['updated_at'],
-        'run_status' => $run['run_status'],
-    ]);
-    return $run;
-}
-
-function update_run(string $runId, int $nextOffset, ?int $total, string $status = 'running'): void
-{
-    db()->prepare('UPDATE sync_runs SET next_offset = :offset, total = :total, updated_at = :updated, completed_at = :completed, run_status = :status WHERE run_id = :id')
-        ->execute(['offset' => $nextOffset, 'total' => $total, 'updated' => now_utc(), 'completed' => $status === 'completed' ? now_utc() : null, 'status' => $status, 'id' => $runId]);
-}
-
-function stats_template(string $type): array
-{
-    return ['task_type' => $type, 'api_pages' => 0, 'scanned_anime' => 0, 'with_cover' => 0, 'without_cover' => 0, 'new_downloads' => 0, 'existing_skipped' => 0, 'new_anime' => 0, 'url_changes' => 0, 'deep_changes' => 0, 'remote_missing' => 0, 'update_success' => 0, 'update_failed' => 0, 'download_bytes' => 0, 'manifest_records' => 0, 'complete' => false, 'next_offset' => 0, 'elapsed_seconds' => 0.0];
-}
-
-function scan_pages(string $mode, array $options): array
-{
-    $start = microtime(true);
-    $stats = stats_template($mode);
-    $run = current_run($mode, (bool) $options['resume']);
-    $offset = $mode === 'check-updates' ? 0 : (int) $run['next_offset'];
-    $total = $run['total'] !== null ? (int) $run['total'] : null;
-    $processedItems = 0;
-    $changes = [];
-    while ($total === null || $offset < $total) {
-        if ($options['max-pages'] !== null && $stats['api_pages'] >= (int) $options['max-pages']) break;
-        $page = fetch_subject_page($offset);
-        $total = (int) ($page['total'] ?? 0);
-        $items = $page['data'] ?? [];
-        foreach ($items as $item) {
-            if ($options['max-items'] !== null && $processedItems >= (int) $options['max-items']) break 2;
-            $id = (int) ($item['id'] ?? 0);
-            if ($id <= 0 || (int) ($item['type'] ?? SUBJECT_TYPE_ANIME) !== SUBJECT_TYPE_ANIME) continue;
-            $url = $item['images']['large'] ?? null;
-            $before = manifest_row($id);
-            $status = upsert_observed($id, is_string($url) && $url !== '' ? $url : null, $mode);
-            $stats['scanned_anime']++;
-            $processedItems++;
-            $url ? $stats['with_cover']++ : $stats['without_cover']++;
-            if (!$before) $stats['new_anime']++;
-            if ($status === 'pending_update') $stats['url_changes']++;
-            if ($status === 'remote_missing') $stats['remote_missing']++;
-            if ($status === 'unchanged' || $status === 'downloaded') $stats['existing_skipped']++;
-            if ($mode === 'sync' && in_array($status, ['pending', 'pending_update'], true)) {
-                if (apply_one($id, (bool) $options['dry-run'])) $stats['new_downloads']++;
-                else $stats['update_failed']++;
-                usleep((int) (((float) $options['download-delay']) * 1000000));
-            }
-            if (in_array($status, ['pending', 'pending_update', 'remote_missing'], true)) {
-                $after = manifest_row($id);
-                $changes[] = ['subject_id' => $id, 'status' => $status, 'downloaded_url' => $before['downloaded_url'] ?? null, 'observed_url' => $after['observed_url'] ?? null];
-            }
-        }
-        $offset += PAGE_LIMIT;
-        $stats['api_pages']++;
-        update_run($run['run_id'], $offset, $total, 'running');
-        usleep((int) (((float) $options['api-delay']) * 1000000));
-    }
-    $complete = $total !== null && $offset >= $total && ($options['max-pages'] === null) && ($options['max-items'] === null);
-    update_run($run['run_id'], $offset, $total, $complete ? 'completed' : 'running');
-    if ($mode === 'check-updates') write_report($stats, $changes);
-    $stats['complete'] = $complete;
-    $stats['next_offset'] = $offset;
-    $stats['manifest_records'] = (int) db()->query('SELECT COUNT(*) FROM cover_manifest')->fetchColumn();
-    $stats['elapsed_seconds'] = round(microtime(true) - $start, 3);
-    return $stats;
-}
-
-function write_report(array $stats, array $changes): void
-{
-    $date = gmdate('Y-m-d');
-    $base = cover_sync_paths()['reports'] . '/cover-changes-' . $date;
-    $report = ['summary' => $stats, 'changes' => $changes];
-    file_put_contents($base . '.json', json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
-    $txt = "ChronoShelter cover changes {$date}\n";
-    foreach ($stats as $key => $value) $txt .= "{$key}: {$value}\n";
-    foreach ($changes as $change) $txt .= json_encode($change, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
-    file_put_contents($base . '.txt', $txt);
-}
-
-function apply_updates(array $options): array
-{
-    $stats = stats_template('apply-updates');
-    $sql = "SELECT subject_id FROM cover_manifest WHERE subject_type = 2 AND status IN ('pending','pending_update') AND observed_url IS NOT NULL ORDER BY subject_id";
-    if ($options['subject-id']) $sql = 'SELECT subject_id FROM cover_manifest WHERE subject_id = ' . (int) $options['subject-id'] . " AND subject_type = 2";
-    $rows = db()->query($sql)->fetchAll(PDO::FETCH_COLUMN);
-    $limit = $options['max-items'] !== null ? (int) $options['max-items'] : count($rows);
-    foreach (array_slice($rows, 0, $limit) as $id) {
-        if (apply_one((int) $id, (bool) $options['dry-run'])) $stats['update_success']++; else $stats['update_failed']++;
-        usleep((int) (((float) $options['download-delay']) * 1000000));
-    }
-    $stats['complete'] = count($rows) <= $limit;
-    $stats['manifest_records'] = (int) db()->query('SELECT COUNT(*) FROM cover_manifest')->fetchColumn();
-    return $stats;
-}
-
-function retry_failed(array $options): array
-{
-    db()->exec("UPDATE cover_manifest SET status = CASE WHEN downloaded_url IS NULL THEN 'pending' ELSE 'pending_update' END WHERE subject_type = 2 AND status = 'failed'");
-    return apply_updates($options);
-}
-
-function verify_files(array $options): array
-{
-    $stats = stats_template('verify-files');
-    $rows = db()->query("SELECT subject_id, relative_path FROM cover_manifest WHERE subject_type = 2 AND relative_path IS NOT NULL")->fetchAll(PDO::FETCH_ASSOC);
-    foreach ($rows as $row) {
-        $stats['scanned_anime']++;
-        if (!local_cover_ok($row['relative_path'])) {
-            db()->prepare("UPDATE cover_manifest SET status = 'pending_update', error_message = 'local file missing or invalid' WHERE subject_id = :id")->execute(['id' => $row['subject_id']]);
-            $stats['url_changes']++;
-        } else {
-            $stats['existing_skipped']++;
-        }
-    }
-    $stats['complete'] = true;
-    $stats['manifest_records'] = (int) db()->query('SELECT COUNT(*) FROM cover_manifest')->fetchColumn();
-    return $stats;
-}
-
-function deep_check(array $options): array
-{
-    $stats = stats_template('deep-check');
-    if ($options['all'] && !$options['confirm-all']) {
-        fwrite(STDERR, "Refusing --all without --confirm-all\n");
-        exit(2);
-    }
-    if ($options['subject-id']) {
-        $rows = [manifest_row((int) $options['subject-id'])];
-    } elseif ($options['all']) {
-        $rows = db()->query("SELECT * FROM cover_manifest WHERE subject_type = 2 AND downloaded_url IS NOT NULL")->fetchAll(PDO::FETCH_ASSOC);
-        echo 'deep-check --all count=' . count($rows) . "\n";
-    } else {
-        $sample = max(1, (int) ($options['sample'] ?? 100));
-        $rows = db()->query("SELECT * FROM cover_manifest WHERE subject_type = 2 AND downloaded_url IS NOT NULL ORDER BY RANDOM() LIMIT {$sample}")->fetchAll(PDO::FETCH_ASSOC);
-    }
-    foreach (array_filter($rows) as $row) {
-        $stats['scanned_anime']++;
-        $headers = [];
-        if ($row['etag']) $headers[] = 'If-None-Match: ' . $row['etag'];
-        if ($row['last_modified']) $headers[] = 'If-Modified-Since: ' . $row['last_modified'];
-        if ($options['dry-run']) continue;
-        try {
-            $meta = download_image_to_tmp((int) $row['subject_id'], (string) $row['downloaded_url'], $headers);
-            if (($meta['not_modified'] ?? false) === true) {
-                db()->prepare("UPDATE cover_manifest SET status = 'unchanged', last_checked_at = :checked WHERE subject_id = :id")->execute(['checked' => now_utc(), 'id' => $row['subject_id']]);
-                $stats['existing_skipped']++;
-                continue;
-            }
-            if (($meta['sha256'] ?? '') !== ($row['sha256'] ?? '')) {
-                db()->prepare("UPDATE cover_manifest SET status = 'pending_update', error_message = 'deep-check sha256 changed', last_checked_at = :checked WHERE subject_id = :id")->execute(['checked' => now_utc(), 'id' => $row['subject_id']]);
-                $stats['deep_changes']++;
-            } else {
-                @unlink($meta['tmp_path']);
-                db()->prepare("UPDATE cover_manifest SET status = 'unchanged', last_checked_at = :checked WHERE subject_id = :id")->execute(['checked' => now_utc(), 'id' => $row['subject_id']]);
-                $stats['existing_skipped']++;
-            }
-        } catch (Throwable $exc) {
-            mark_failed((int) $row['subject_id'], $exc->getMessage());
-            $stats['update_failed']++;
-        }
-        usleep((int) (((float) $options['download-delay']) * 1000000));
-    }
-    $stats['complete'] = true;
-    $stats['manifest_records'] = (int) db()->query('SELECT COUNT(*) FROM cover_manifest')->fetchColumn();
-    return $stats;
-}
-
-function print_stats(array $stats): void
-{
-    foreach ($stats as $key => $value) {
-        echo $key . ': ' . (is_bool($value) ? ($value ? 'yes' : 'no') : (string) $value) . "\n";
-    }
+    return ['task' => 'import-mapping', 'update_success' => count($rows), 'complete' => true];
 }
 
 function usage(): void
 {
-    echo "Usage: php bin/bangumi_covers.php <sync|check-updates|apply-updates|retry-failed|verify-files|deep-check> [options]\n";
-    echo "All Bangumi subject scans are fixed to type=2, limit=100, images.large only.\n";
+    echo "Usage: php bin/bangumi_covers.php import-mapping --file=/path/to/cover-mapping.jsonl\n";
+    echo "NAS/PHP does not sync Bangumi covers. Use Python for sync/verify/export.\n";
 }
 
-[$command, $options] = cli_options($argv);
-try {
-    ensure_runtime_dirs();
-    match ($command) {
-        'sync' => print_stats(scan_pages('sync', $options)),
-        'check-updates' => print_stats(scan_pages('check-updates', $options)),
-        'apply-updates' => print_stats(apply_updates($options)),
-        'retry-failed' => print_stats(retry_failed($options)),
-        'verify-files' => print_stats(verify_files($options)),
-        'deep-check' => print_stats(deep_check($options)),
-        default => usage(),
-    };
-} catch (Throwable $exc) {
-    fwrite(STDERR, 'ERROR: ' . $exc->getMessage() . "\n");
-    exit(1);
+function main(array $argv): int
+{
+    [$command, $options] = cli_options($argv);
+    try {
+        ensure_runtime_dirs();
+        if ($command === 'import-mapping') {
+            foreach (import_mapping($options) as $key => $value) echo $key . ': ' . (string) $value . "\n";
+            return 0;
+        }
+        if (in_array($command, ['sync','check-updates','apply-updates','retry-failed','deep-check','verify-files','export-mapping','cleanup-covers'], true)) {
+            fwrite(STDERR, "PHP cover command is disabled on NAS; use Python sync/verify/export and PHP import-mapping only.\n");
+            return 2;
+        }
+        usage();
+        return 0;
+    } catch (Throwable $exc) {
+        fwrite(STDERR, 'ERROR: ' . $exc->getMessage() . "\n");
+        return 1;
+    }
+}
+
+if (realpath((string) ($_SERVER['SCRIPT_FILENAME'] ?? '')) === __FILE__) {
+    exit(main($argv));
 }
