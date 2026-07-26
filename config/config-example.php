@@ -21,6 +21,6 @@ return [
         'directory' => dirname(__DIR__) . '/covers',
         'public_path' => 'covers',
         'subjects_directory' => 'subjects',
-        'fallback' => 'logo.png',
+        'fallback' => 'logo.webp',
     ],
 ];

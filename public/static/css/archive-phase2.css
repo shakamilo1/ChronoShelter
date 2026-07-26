@@ -1,0 +1,158 @@
+/* ChronoShelter archive grid — phase 2 */
+
+.poster-grid {
+    grid-template-columns:
+        repeat(
+            auto-fill,
+            minmax(clamp(190px, 11.5vw, 235px), 1fr)
+        );
+
+    gap: clamp(14px, 1.15vw, 22px);
+}
+
+.poster-grid.is-grid-enhanced {
+    grid-template-columns:
+        repeat(
+            var(--archive-columns),
+            minmax(0, 1fr)
+        );
+}
+
+.poster-card {
+    width: 100%;
+}
+
+.poster-card.is-placeholder .poster-media img {
+    filter: brightness(0.88) saturate(0.88);
+}
+
+.poster-card.is-placeholder:hover .poster-media img {
+    filter: brightness(0.96) saturate(0.94);
+}
+
+.poster-vignette {
+    background:
+        linear-gradient(
+            to bottom,
+            rgba(5, 6, 12, 0.08) 0%,
+            transparent 32%,
+            transparent 56%,
+            rgba(5, 6, 12, 0.82) 100%
+        ),
+        linear-gradient(
+            90deg,
+            rgba(6, 7, 13, 0.14),
+            transparent 18%,
+            transparent 82%,
+            rgba(6, 7, 13, 0.14)
+        );
+}
+
+.poster-tag-layer {
+    right: 9px;
+    bottom: 9px;
+    left: 9px;
+
+    align-items: flex-end;
+    gap: 5px;
+
+    max-height: 64px;
+    overflow: hidden;
+}
+
+.poster-tag {
+    display: inline-flex;
+    align-items: center;
+
+    max-width: 100%;
+    min-height: 24px;
+    padding: 4px 8px;
+
+    overflow: hidden;
+
+    border: 1px solid rgba(222, 214, 240, 0.18);
+    border-radius: 999px;
+
+    color: #e9e2f5;
+    font-size: 10px;
+    font-weight: 650;
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+
+    background: rgba(12, 13, 23, 0.72);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
+    backdrop-filter: blur(10px);
+}
+
+.poster-tag-more {
+    color: #cbbce8;
+    border-color: rgba(177, 151, 218, 0.28);
+    background: rgba(93, 68, 137, 0.58);
+}
+
+.poster-body {
+    min-height: 164px;
+}
+
+.poster-title,
+.card h2 {
+    font-size: clamp(14px, 0.92vw, 16px);
+}
+
+.poster-original,
+.poster-meta,
+.watch-progress {
+    font-size: clamp(10px, 0.72vw, 12px);
+}
+
+.button-small {
+    min-height: 36px;
+    font-size: clamp(10px, 0.7vw, 12px);
+}
+
+@media (min-width: 1800px) {
+    .wrap,
+    .site-footer {
+        width: min(calc(100% - 56px), var(--content-width));
+    }
+}
+
+@media (max-width: 900px) {
+    .poster-grid {
+        grid-template-columns:
+            repeat(
+                auto-fill,
+                minmax(clamp(165px, 28vw, 205px), 1fr)
+            );
+    }
+}
+
+@media (max-width: 680px) {
+    .poster-grid,
+    .poster-grid.is-grid-enhanced {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .poster-tag-layer {
+        right: 7px;
+        bottom: 7px;
+        left: 7px;
+        gap: 4px;
+        max-height: 54px;
+    }
+
+    .poster-tag {
+        min-height: 21px;
+        padding: 3px 6px;
+        font-size: 9px;
+    }
+
+    .poster-tag:nth-child(n + 4):not(.poster-tag-more) {
+        display: none;
+    }
+
+    .poster-body {
+        min-height: 150px;
+    }
+}
